@@ -1,0 +1,36 @@
+name: build-kext
+on:
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: "Target macOS build of the native layer (15 = Sequoia, 26 = Tahoe)"
+        type: choice
+        options: ["15", "26"]
+        default: "15"
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build kext
+        run: |
+          chmod +x Source/build-mt7902.sh Source/MT7902AirWiFiLayer/build.sh
+          cd Source
+          MT7902_MACOS=${{ inputs.macos }} MT7902_VERSION=0.7.0 ./build-mt7902.sh release
+      - name: Package kext
+        run: |
+          cd Source/build-release
+          zip -r -y "$GITHUB_WORKSPACE/MT7902WiFi-mt7902-macos${{ inputs.macos }}.kext.zip" MT7902WiFi.kext
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MT7902WiFi-mt7902-macos${{ inputs.macos }}
+          path: MT7902WiFi-mt7902-macos${{ inputs.macos }}.kext.zip
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-macos${{ inputs.macos }}
+          path: |
+            Source/build-release/*.log
+            Source/MT7902AirWiFiLayer/build/*.log
+          if-no-files-found: ignore

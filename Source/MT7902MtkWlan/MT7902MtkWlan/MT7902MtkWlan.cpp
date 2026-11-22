@@ -1065,24 +1065,25 @@ void MT7902MtkWlan::associatePMK(const uint8_t *ssid, uint8_t ssid_len, const ui
         ic->ic_flags &= ~IEEE80211_F_AUTO_JOIN;     /* 'nwid' disables auto-join magic */
     ieee80211_disable_rsn(ic);
     ieee80211_disable_wep(ic);
+    memset(&wpa, 0, sizeof(wpa));
+    ieee80211_ioctl_getwpaparms(ic, &wpa);
+    wpa.i_enabled = 1;
+    wpa.i_ciphers = 0;
+    wpa.i_groupcipher = 0;
+    wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
+    wpa.i_akms = IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_8021X |
+                 IEEE80211_WPA_AKM_SHA256_PSK | IEEE80211_WPA_AKM_SHA256_8021X;
     if (pmk != NULL) {
         memset(&psk, 0, sizeof(psk));
         memcpy(psk.i_psk, pmk, 32);
         psk.i_enabled = 1;
         ic->ic_flags |= IEEE80211_F_PSK;
         memcpy(ic->ic_psk, psk.i_psk, sizeof(ic->ic_psk));
-        memset(&wpa, 0, sizeof(wpa));
-        ieee80211_ioctl_getwpaparms(ic, &wpa);
-        wpa.i_enabled = 1;
-        wpa.i_ciphers = 0;
-        wpa.i_groupcipher = 0;
-        wpa.i_protos = IEEE80211_WPA_PROTO_WPA1 | IEEE80211_WPA_PROTO_WPA2;
-        wpa.i_akms = IEEE80211_WPA_AKM_PSK | IEEE80211_WPA_AKM_8021X | IEEE80211_WPA_AKM_SHA256_PSK | IEEE80211_WPA_AKM_SHA256_8021X;
-        ieee80211_ioctl_setwpaparms(ic, &wpa);
     } else {
         ic->ic_flags &= ~IEEE80211_F_PSK;
         memset(ic->ic_psk, 0, sizeof(ic->ic_psk));
     }
+    ieee80211_ioctl_setwpaparms(ic, &wpa);
     if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL)
         IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
     ieee80211_del_ess(ic, NULL, 0, 1);

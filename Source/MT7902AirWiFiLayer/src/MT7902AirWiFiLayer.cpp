@@ -2036,7 +2036,9 @@ IOReturn MT7902AirWiFiLayer::joinStart(const uint8_t *cand)
     memcpy(j.ssid, cand + 0x20, j.ssid_len);
     uint32_t klen = *(const uint32_t *)(cand + 0x40 + 0x4);
     uint32_t kcipher = *(const uint32_t *)(cand + 0x40 + 0x8);
-    if (klen == 32) {
+    uint16_t rsnie_len = *(const uint16_t *)(cand + 0xd4);
+    uint16_t assoc_flags = *(const uint16_t *)(cand + 0x1e0);
+    if (klen >= 32) {
         j.has_pmk = 1;
         memcpy(j.pmk, cand + 0x40 + 0x10, 32);
     }
@@ -2045,9 +2047,9 @@ IOReturn MT7902AirWiFiLayer::joinStart(const uint8_t *cand)
         memcpy(j.bssid, cand + 0x218 + 0x4, 6);
     uint16_t spec = ncand > 0 ? *(const uint16_t *)(cand + 0x218 + 0x10) : 0;
     memcpy(fJoinBssid, j.bssid, 6);
-    yy_trace("JOIN: ssid_len=%u cipher=%u key_len=%u pmk=%u ncand=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x spec=0x%x rsnie=%u\n",
+    yy_trace("JOIN: ssid_len=%u cipher=%u key_len=%u pmk=%u ncand=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x spec=0x%x rsnie=%u flags=0x%x\n",
              j.ssid_len, kcipher, klen, j.has_pmk, ncand, j.bssid[0], j.bssid[1], j.bssid[2], j.bssid[3],
-             j.bssid[4], j.bssid[5], spec, *(const uint16_t *)(cand + 0xd4));
+             j.bssid[4], j.bssid[5], spec, rsnie_len, assoc_flags);
     IOReturn ret = r->callPlatformFunction(YY_RADIO_FN_JOIN, false, &j, nullptr, nullptr, nullptr);
     yy_trace("JOIN: radio join = 0x%x\n", ret);
     bzero(&j, sizeof(j));               /* do not keep the PMK around */

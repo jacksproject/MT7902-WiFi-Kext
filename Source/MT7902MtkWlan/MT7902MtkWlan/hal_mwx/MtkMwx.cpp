@@ -3639,7 +3639,7 @@ mwx_dma_tx_cleanup(struct mwx_softc *sc, struct mwx_queue *q)
 
 			/* TXWI cleanup is driven by the firmware TX free event. */
 			md->md_txwi = NULL;
-			if (txwi_ack_log_count < 200) {
+			if (txwi_ack_log_count < 16) {
 				MWX_DEV_LOG(sc, "txwi acked idx=%d\n", idx);
 				txwi_ack_log_count++;
 			}
@@ -8355,10 +8355,10 @@ mwx_poll_timer_fire(OSObject *, IOTimerEventSource *t)
 		static int seen_run;
 		if (sc->sc_ic.ic_state == IEEE80211_S_RUN)
 			seen_run = 1;
-		if (seen_run && samples < 40) {
+		if (seen_run && samples < 10) {
 			clock_sec_t sec; clock_usec_t usec; clock_get_system_microtime(&sec, &usec);
 			uint32_t ms = (uint32_t)(sec * 1000 + usec / 1000);
-			if (ms - last_ms >= 1500) {
+			if (ms - last_ms >= 5000) {
 				last_ms = ms; samples++;
 				struct mwx_queue *qs[6] = { &sc->sc_txq, &sc->sc_txmcuq, &sc->sc_txfwdlq,
 				    &sc->sc_rxq, &sc->sc_rxmcuq, &sc->sc_rxfwdlq };

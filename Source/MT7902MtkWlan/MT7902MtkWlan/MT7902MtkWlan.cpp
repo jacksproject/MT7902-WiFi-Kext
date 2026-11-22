@@ -76,7 +76,6 @@ extern "C" void smtw_trace(const char *fmt, ...)
     va_end(ap);
     if (n <= 0) return;
     if (n >= (int)sizeof(line)) n = (int)sizeof(line) - 1;
-    IOLog("%s", line);
     if (!gSmtwLock) return;
     IOSimpleLockLock(gSmtwLock);
     if (gSmtwHeadLen + n < sizeof(gSmtwHead)) {
@@ -139,14 +138,13 @@ static void smtw_pub_tick(thread_call_param_t, thread_call_param_t)
     static uint32_t hb_n, last_fires, last_state_n;
     uint32_t f = mwx_poll_fires();
     {
-        /* R9T trace38: kalici loga (unified log) 10 sn'de bir kalp atisi - donma tanisi */
-        static uint32_t hb10, last10;
-        if (++hb10 % 10 == 0) {
-            IOLog("MT7902MtkWlan: hb t=%us poll_fires=%u delta=%u\n", hb10, f, f - last10);
-            last10 = f;
+        static uint32_t hb30, last30;
+        if (++hb30 % 30 == 0) {
+            IOLog("MT7902MtkWlan: hb t=%us poll_fires=%u delta=%u\n", hb30, f, f - last30);
+            last30 = f;
         }
     }
-    if (f != 0 && hb_n < 60 && (++last_state_n % 2) == 0) {
+    if (f != 0 && hb_n < 12 && (++last_state_n % 6) == 0) {
         hb_n++;
         smtw_trace("HB #%u poll_fires=%u delta=%u\n", hb_n, f, f - last_fires);
         last_fires = f;

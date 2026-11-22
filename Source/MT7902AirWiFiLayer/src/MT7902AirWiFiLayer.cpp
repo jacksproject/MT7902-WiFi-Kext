@@ -598,7 +598,7 @@ IOReturn MT7902AirWiFiLayerInterface::setMacAddress(ether_addr &a)
     if (ctl != nullptr && !(a.octet[0] & 1))
         r = ctl->setRadioMac(a.octet);
     static uint32_t n;
-    if (n++ < 10)
+    if (n++ < 2)
         yy_trace("IF: setMacAddress %02x:%02x:%02x:%02x:%02x:%02x = 0x%x\n", a.octet[0], a.octet[1], a.octet[2],
                  a.octet[3], a.octet[4], a.octet[5], r);
     return r;
@@ -885,7 +885,7 @@ IOReturn MT7902AirWiFiLayerInterface::getROAM_PROFILE(apple80211_roam_profile_al
 IOReturn MT7902AirWiFiLayerInterface::setWCL_SCAN_REQ(apple80211ScanRequest *)
 {
     static uint32_t n;
-    if (n++ < 10)
+    if (n++ < 2)
         yy_trace("IF: setWCL_SCAN_REQ #%u\n", n);
     MT7902AirWiFiLayer *c = yy_ctrl_of(this);
     return c ? c->startScan() : kIOReturnNotReady;
@@ -1973,7 +1973,7 @@ void MT7902AirWiFiLayer::scanTimerFired()
     uint32_t status = 0;
     yy_ctrl_postMessage(this, fNetIf, YY_MSG_WCL_SCAN_DONE, &status, sizeof(status), true);
     static uint32_t k;
-    if (k++ < 20)
+    if (k++ < 3)
         yy_trace("SCAN: posted %u BSS + scan done\n", posted);
 }
 

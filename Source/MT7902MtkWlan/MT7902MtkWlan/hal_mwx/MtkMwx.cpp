@@ -119,7 +119,7 @@ static volatile int gMwxTrapMode = 1;
 static uint32_t gTxDeq, gTxOk, gTxNoTxwi, gTxRingFull, gTxMapFail, gTxOactSet, gTxRestart, gTxFreeEv, gTxFreed;
 static int32_t gTxwiUse, gTxwiPeak;
 static volatile int gTxBackpressure = 1;
-static volatile uint32_t gMwxPollUs = 5000;	/* MT7902 msi2: MSI veri yolunu tasiyor, yoklama 5 ms guvenlik agi (dbg 22) */
+static volatile uint32_t gMwxPollUs = 2000;	/* MT7902 msi2: MSI veri yolunu tasiyor, yoklama 2 ms guvenlik agi (dbg 22) */
 /* R9T trace29: RX istatistikleri (dbg op 11/12) */
 static uint32_t gRxVht[2][10];	/* R9T trace39: [nss-1][mcs] */
 static uint64_t gPollBusyAbs, gPollWinAbs0; static uint32_t gPollCalls;
@@ -1290,7 +1290,7 @@ mwx_start_body(struct ifnet *ifp)
 		/* R9T trace34: kaynak yoksa paketi atma, kuyrukta beklet (OACTIVE) */
 		if (gTxBackpressure &&
 		    (LIST_EMPTY(&sc->sc_txwi.mt_freelist) ||
-		    mwx_dma_free_slots(&sc->sc_txq) < 2)) {
+		    mwx_dma_free_slots(&sc->sc_txq) < 1)) {
 			ifq_set_oactive(&ifp->if_snd);
 			gTxOactSet++;
 			break;
@@ -7184,7 +7184,7 @@ mwx_tx_kick(struct mwx_softc *sc)
 	if (!ifq_is_oactive(&ifp->if_snd))
 		return;
 	if (LIST_EMPTY(&sc->sc_txwi.mt_freelist) ||
-	    mwx_dma_free_slots(&sc->sc_txq) < 2)
+	    mwx_dma_free_slots(&sc->sc_txq) < 1)
 		return;
 	ifq_clr_oactive(&ifp->if_snd);
 	gTxRestart++;

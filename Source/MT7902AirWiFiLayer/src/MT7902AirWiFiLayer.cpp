@@ -969,11 +969,11 @@ bool yy_infra_setLinkState(void *self, uint32_t state, uint32_t a, bool debounce
 extern "C" uint32_t yy_radio_tx_batch(IOService *radio, mbuf_t head);   /* radio part, same kext */
 #define YY_TX_HEADROOM    128
 #define YY_POOL_NOSLEEP   1        /* allocatePacket option bit 0 -> kern_pbufpool_alloc_nosleep */
-#define YY_BATCH          64       /* < queue capacity (enqueuePackets needs n < capacity) */
+#define YY_BATCH          128      /* < queue capacity (enqueuePackets needs n < capacity) */
 #ifdef MT7902_OS26
 #define YY_RXQ_MAX        8192      /* macOS 26: bursts + 100 ms drain stalls overflowed 1024 */
 #else
-#define YY_RXQ_MAX        2048
+#define YY_RXQ_MAX        4096
 #endif
 
 #define YY_SKW_QCAP     512

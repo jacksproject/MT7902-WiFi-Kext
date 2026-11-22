@@ -1323,7 +1323,7 @@ static IOReturn yy_radio_gate_body(OSObject *owner, void *a0)
          * native layer owns the data path.
          */
         if (ic->ic_ac.ac_if.if_snd.queue != NULL)
-            ic->ic_ac.ac_if.if_snd.queue->setCapacity(yy_rx_hook_fn != NULL ? 1024 : 2048);
+            ic->ic_ac.ac_if.if_snd.queue->setCapacity(yy_rx_hook_fn != NULL ? 2048 : 2048);
         if (yy_rx_hook_fn != NULL) {
             that->IOEthernetController::setLinkStatus(kIONetworkLinkValid, NULL, 0, NULL);
             XYLog("MT7902: data hook attached, own interface inactive\n");

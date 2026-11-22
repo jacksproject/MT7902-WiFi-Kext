@@ -3367,7 +3367,7 @@ mwx_dma_alloc(struct mwx_softc *sc)
 	if ((rv = mwx_queue_alloc(sc, &sc->sc_txq, MWX_TX_RING_COUNT,
 	    MT_TX_DATA_RING_BASE)) != 0)
 		return rv;
-	if ((rv = mwx_queue_alloc(sc, &sc->sc_txmcuq, 256,
+	if ((rv = mwx_queue_alloc(sc, &sc->sc_txmcuq, 128,
 	    MWX_IS_7902(sc) ? MT7925_TX_MCU_RING_BASE :
 	    MT_TX_MCU_RING_BASE)) != 0)
 		return rv;
@@ -3382,13 +3382,13 @@ mwx_dma_alloc(struct mwx_softc *sc)
 		return rv;
 	/* MT7902 has no MCU_WA RX ring */
 	if (!MWX_IS_7902(sc) &&
-	    ((rv = mwx_queue_alloc(sc, &sc->sc_rxmcuq, 256,
+	    ((rv = mwx_queue_alloc(sc, &sc->sc_rxmcuq, 128,
 	    MT_RX_MCU_RING_BASE)) != 0 ||
 	    (rv = mwx_queue_fill(sc, &sc->sc_rxmcuq)) != 0))
 		return rv;
-	/* MT7902: RX ring 0 carries events and TX-done events, 512 entries */
+	/* MT7902: RX ring 0 carries events and TX-done events, 256 entries */
 	if ((rv = mwx_queue_alloc(sc, &sc->sc_rxfwdlq,
-	    MWX_IS_7902(sc) ? 512 : 16 /* XXX */,
+	    MWX_IS_7902(sc) ? 256 : 16 /* XXX */,
 	    MT_RX_FWDL_RING_BASE)) != 0 ||
 	    (rv = mwx_queue_fill(sc, &sc->sc_rxfwdlq)) != 0)
 		return rv;

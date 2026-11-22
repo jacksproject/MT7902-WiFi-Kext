@@ -119,7 +119,7 @@ static volatile int gMwxTrapMode = 1;
 static uint32_t gTxDeq, gTxOk, gTxNoTxwi, gTxRingFull, gTxMapFail, gTxOactSet, gTxRestart, gTxFreeEv, gTxFreed;
 static int32_t gTxwiUse, gTxwiPeak;
 static volatile int gTxBackpressure = 1;
-static volatile uint32_t gMwxPollUs = 20000;	/* MT7902 msi2: MSI veri yolunu tasiyor, yoklama yalniz guvenlik agi (dbg 22) */
+static volatile uint32_t gMwxPollUs = 5000;	/* MT7902 msi2: MSI veri yolunu tasiyor, yoklama 5 ms guvenlik agi (dbg 22) */
 /* R9T trace29: RX istatistikleri (dbg op 11/12) */
 static uint32_t gRxVht[2][10];	/* R9T trace39: [nss-1][mcs] */
 static uint64_t gPollBusyAbs, gPollWinAbs0; static uint32_t gPollCalls;

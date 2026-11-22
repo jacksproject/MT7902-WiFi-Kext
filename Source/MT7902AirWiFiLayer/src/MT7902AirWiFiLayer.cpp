@@ -1595,7 +1595,7 @@ IOReturn MT7902AirWiFiLayer::selectMedium(const IONetworkMedium *medium)
 #define YY_MSG_WCL_SCAN_DONE  237
 #define YY_SCAN_MAX           64
 #define YY_SCAN_WAIT_MS       2500
-#define YY_SCAN_LINKED_MS     300       /* associated: cached results only */
+#define YY_SCAN_LINKED_MS     500       /* associated: cached results only */
 #define YY_NOISE_DBM          (-95)
 
 extern "C" void yy_ctrl_postMessage(void *ctrl, void *iface, unsigned int msg, void *data,
@@ -1998,8 +1998,8 @@ void MT7902AirWiFiLayer::scanTimerFired()
 #define YY_MSG_CONNECT_DONE    0xd5
 #define YY_MSG_CUR_CHANNEL     0x52
 #define YY_MSG_SUPPLICANT      0x4c
-#define YY_JOIN_TICK_MS        500
-#define YY_JOIN_TICKS_MAX      40      /* 20 s */
+#define YY_JOIN_TICK_MS        250
+#define YY_JOIN_TICKS_MAX      80      /* 20 s */
 
 static void yy_join_timer_action(OSObject *owner, IOTimerEventSource *)
 {
@@ -2482,16 +2482,11 @@ void MT7902AirWiFiLayer::dataAttach()
     if (fSymTx == nullptr)
         fSymTx = OSSymbol::withCString(YY_RADIO_FN_TX);
     if (fRxES == nullptr) {
-#ifdef MT7902_OS26
-        /* macOS 26: the RX drain used to run on the shared IO80211 work queue (WCL commands,
-         * timers, ioctls); stalls there of 100+ ms filled our 1024-packet backlog (about 1 %
-         * RX drops, TCP stuck near 40 Mbit/s). Own thread instead. */
+        /* Dedicated RX workloop so WCL commands, timers, or ioctls on the shared
+         * IO80211 work queue do not stall RX draining and backlog drops. */
         if (fRxLoop == nullptr)
             fRxLoop = IOWorkLoop::workLoop();
         IOWorkLoop *wl = fRxLoop != nullptr ? fRxLoop : (IOWorkLoop *)gYYWorkQueue;
-#else
-        IOWorkLoop *wl = (IOWorkLoop *)gYYWorkQueue;
-#endif
         fRxES = IOInterruptEventSource::interruptEventSource(this, yy_rx_es_action);
         if (fRxES != nullptr && wl->addEventSource(fRxES) != kIOReturnSuccess)
             OSSafeReleaseNULL(fRxES);

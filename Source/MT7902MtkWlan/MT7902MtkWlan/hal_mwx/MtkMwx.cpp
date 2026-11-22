@@ -5024,7 +5024,7 @@ mwx_mac_init_band(struct mwx_softc *sc, uint32_t band)
 	mwx_set(sc, MT_MIB_SCR1(band), MT_MIB_RXDUR_EN);
 
 	mwx_rmw(sc, MT_DMA_DCR0(band),
-	    1536 << MT_DMA_DCR0_MAX_RX_LEN_SHIFT, MT_DMA_DCR0_MAX_RX_LEN_MASK);
+	    2304 << MT_DMA_DCR0_MAX_RX_LEN_SHIFT, MT_DMA_DCR0_MAX_RX_LEN_MASK);
 	/* disable rx rate report by default due to hw issues */
 	mwx_clear(sc, MT_DMA_DCR0(band), MT_DMA_DCR0_RXD_G5_EN);
 
@@ -5041,7 +5041,7 @@ mwx_mac_init(struct mwx_softc *sc)
 {
 	int i;
 
-	mwx_rmw(sc, MT_MDP_DCR1, 1536 << MT_MDP_DCR1_MAX_RX_LEN_SHIFT,
+	mwx_rmw(sc, MT_MDP_DCR1, 2304 << MT_MDP_DCR1_MAX_RX_LEN_SHIFT,
 	    MT_MDP_DCR1_MAX_RX_LEN_MASK);
 
 	/* enable hardware de-agg */

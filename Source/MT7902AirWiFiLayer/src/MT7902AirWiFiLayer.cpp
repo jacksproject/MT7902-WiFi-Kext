@@ -976,8 +976,8 @@ extern "C" uint32_t yy_radio_tx_batch(IOService *radio, mbuf_t head);   /* radio
 #define YY_RXQ_MAX        2048
 #endif
 
-#define YY_SKW_QCAP     256
-#define YY_SKW_BUFSIZE  2048
+#define YY_SKW_QCAP     512
+#define YY_SKW_BUFSIZE  4096
 
 static void *gYYPool;
 

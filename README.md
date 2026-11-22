@@ -1,6 +1,6 @@
 # MT7902-WiFi-Kext (AMD Ryzen 7 Hackintosh)
 
-Native macOS Wi-Fi 6 kernel extension for the **MediaTek MT7902** wireless card on **AMD Ryzen 7** Hackintosh builds, supporting **macOS Tahoe (26)** and **macOS Sequoia (15)** via OpenCore.
+Native macOS Wi-Fi 6 kernel extension and Bluetooth setup guide for the **MediaTek MT7902** wireless card on **AMD Ryzen 7** Hackintosh builds, supporting **macOS Tahoe (26)** and **macOS Sequoia (15)** via OpenCore.
 
 > **Maintainer:** Shahin Sharkar (`jacksproject`)  
 > **Repository:** [jacksproject/MT7902-WiFi-Kext](https://github.com/jacksproject/MT7902-WiFi-Kext)
@@ -11,8 +11,8 @@ Native macOS Wi-Fi 6 kernel extension for the **MediaTek MT7902** wireless card 
 
 | Component | Status | Notes |
 | :--- | :--- | :--- |
-| **Wi-Fi (MT7902)** | **Working / Fixed** | Native `IO80211` / `Skywalk` integration for macOS Tahoe (26) & Sequoia (15) on AMD Ryzen 7 |
-| **Bluetooth (MT7902)** | **Remaining / In Progress** | Wi-Fi is fixed; Bluetooth bringup is the remaining task |
+| **Wi-Fi (MT7902)** | **Fixed** | Native `IO80211` / `Skywalk` integration for macOS Tahoe (26) & Sequoia (15) on AMD Ryzen 7 |
+| **Bluetooth (MT7902)** | **Supported** | Supported via `SimpleMtkBtFw` (MT7902 patched fork) + `SimpleMtkBtPatcher` + `BlueToolFixup` |
 
 ---
 
@@ -22,6 +22,8 @@ Native macOS Wi-Fi 6 kernel extension for the **MediaTek MT7902** wireless card 
 
 1. **Radio Driver (`MT7902MtkWlan`)**: Handles MediaTek firmware loading, DMA rings, 802.11 state machine, and Wi-Fi 6 (`802.11ax`) operations.
 2. **Native Wi-Fi Layer (`MT7902AirWiFiLayer`)**: Implements `IO80211Controller`, `IO80211InfraInterface`, and the `IOSkywalkFamily` data path so macOS's native Wi-Fi stack (`airportd`, System Settings, Keychain, auto-join) drives the card directly.
+
+*(Note: On MediaTek MT7902 combo cards, Wi-Fi operates over PCIe while Bluetooth operates over an internal USB interface and uses a separate USB firmware loader.)*
 
 ---
 
@@ -56,7 +58,7 @@ Add your regulatory country code in `config.plist -> NVRAM -> Add -> 7C436110-AB
 
 ---
 
-## How to Use (OpenCore Installation)
+## How to Use: Wi-Fi (OpenCore Installation)
 
 ### 1. Prepare `EFI/OC/Kexts/`
 1. Back up your working OpenCore EFI folder before making changes.
@@ -108,6 +110,59 @@ Add your regulatory country code in `config.plist -> NVRAM -> Add -> 7C436110-AB
 
 ---
 
+## How to Enable Bluetooth (MT7902 Firmware Setup)
+
+Because the MT7902's Bluetooth module runs over an internal USB bus (commonly `13d3:3579`, `0489:e0e2`, or `0e8d:7902`), it requires a USB firmware loader alongside `BlueToolFixup.kext`.
+
+### Step 1: Verify Your Bluetooth Device ID & USB Mapping
+Before adding kexts, confirm macOS detects the internal Bluetooth USB endpoint:
+1. Open **Hackintool** (under the **USB** tab), **System Information -> USB**, or run in Terminal:
+   ```bash
+   ioreg -p IOUSB -l -w0 | grep -i -E "13d3|0489|0e8d|MediaTek|AzureWave"
+   ```
+2. **Check your USB Port Map:** If the device does not appear at all, make sure the internal USB header/port (often `HS10` or `HS14`) is mapped and set to **Internal (`255` / `0xFF`)** in your `USBMap.kext` or `UTBMap.kext`.
+
+### Step 2: Download the Required Kexts
+1. **`Lilu.kext`** (latest release from Acidanthera)
+2. **`BlueToolFixup.kext`** (from Acidanthera's **BrcmPatchRAM** release—required on macOS 12+ so `bluetoothd` initializes third-party controllers)
+3. **`SimpleMtkBtFw.kext`** and **`SimpleMtkBtPatcher.kext`** from the MT7902-patched fork ([jigyanshu-codes/SimpleMtkBtFw](https://github.com/jigyanshu-codes/SimpleMtkBtFw), release `v1.1.1` or newer), which adds `0x7902` (`BT_RAM_CODE_MT7902_1_1_hdr.bin`) firmware support.
+   * *(Tip: If your OEM variant uses a different USB VID/PID than `13d3:3579`, inspect `SimpleMtkBtFw.kext/Contents/Info.plist` under `IOKitPersonalities` and ensure your decimal `idVendor` and `idProduct` match your hardware).*
+
+### Step 3: Configure OpenCore (`config.plist`)
+
+#### 1. `Kernel -> Add` (Exact Load Order Matters)
+Copy the kexts into `EFI/OC/Kexts/` and ensure they load in this exact order (after `Lilu.kext`):
+1. `Lilu.kext`
+2. `BlueToolFixup.kext`
+3. `SimpleMtkBtFw.kext`
+4. `SimpleMtkBtPatcher.kext`
+
+*(Ensure no conflicting Bluetooth firmware kexts such as `IntelBluetoothFirmware` or `BrcmFirmwareData` are enabled).*
+
+#### 2. `NVRAM -> Add -> 7C436110-AB2A-4BBB-A880-FE41995C9F82`
+Add these two keys so macOS treats the controller as an internal Bluetooth module:
+* `bluetoothInternalControllerInfo` | Type: `Data` | Value: `00000000 00000000 00000000 0000` (14 zero bytes)
+* `bluetoothExternalDongleFailed` | Type: `Data` | Value: `00`
+
+*(Also add `bluetoothInternalControllerInfo` and `bluetoothExternalDongleFailed` under `NVRAM -> Delete -> 7C436110-AB2A-4BBB-A880-FE41995C9F82` so stale values clear on reboot).*
+
+#### 3. `NVRAM -> Add -> 7C436110-AB2A-4BBB-A880-FE41995C9F82 -> boot-args`
+Append the following flags to your existing `boot-args`:
+```text
+-btlfxboardid -btlfxallowanyaddr
+```
+
+### Step 4: Cold Boot & Verify
+1. **Perform a Cold Boot:** Save `config.plist`, shut down the system completely, disconnect power (or hold the power button for 10 seconds on a laptop) to reset the MediaTek chip's state, and power back on.
+2. **Reset NVRAM** at the OpenCore boot picker if you added the `NVRAM -> Delete` entries.
+3. Verify the Bluetooth firmware loaded in Terminal:
+   ```bash
+   log show --last boot --predicate 'eventMessage contains "SimpleMtkBt"'
+   ioreg -r -c SimpleMtkBtFw -l | grep -i -E "FirmwareLoaded|fw_name"
+   ```
+
+---
+
 ## How to Compile from Source
 
 ### Prerequisites
@@ -141,7 +196,7 @@ Add your regulatory country code in `config.plist -> NVRAM -> Add -> 7C436110-AB
 * [x] Bring up MediaTek MT7902 Wi-Fi on AMD Ryzen 7 Hackintosh
 * [x] Support macOS Tahoe (26) & macOS Sequoia (15) native Wi-Fi stack
 * [x] Full `MT7902WiFi` rebrand (`MT7902WiFi.kext`, `mt7902-*` boot-args, build scripts, and GitHub Actions workflow)
-* [ ] Fix and integrate MT7902 Bluetooth support
+* [x] Document MT7902 Bluetooth setup (`SimpleMtkBtFw` / `SimpleMtkBtPatcher` + `BlueToolFixup`)
 
 ---
 
@@ -149,6 +204,10 @@ Add your regulatory country code in `config.plist -> NVRAM -> Add -> 7C436110-AB
 
 * **Maintainer:** **Shahin Sharkar** (`jacksproject`)
 * **Base Bringup:** Special thanks to **[yusufcanyavic/YYavicWiFi](https://github.com/yusufcanyavic/YYavicWiFi)** by Yusufcan Yaviç for the base MT7922 bringup and native `IO80211` / `Skywalk` layer architecture.
+* **Bluetooth Support (`SimpleMtkBt*` & `BlueToolFixup`):**
+  * **[laobamac/SimpleMtkBtFw](https://github.com/laobamac/SimpleMtkBtFw)** (`SimpleMtkBtFw.kext` & `SimpleMtkBtPatcher.kext`) by `laobamac` for the MediaTek USB Bluetooth firmware loader and patcher.
+  * **[jigyanshu-codes/SimpleMtkBtFw](https://github.com/jigyanshu-codes/SimpleMtkBtFw)** by `jigyanshu-codes` for patching `SimpleMtkBtFw` with MediaTek MT7902 (`0x7902`) firmware support.
+  * **Acidanthera** (`BrcmPatchRAM` / `BlueToolFixup.kext` & `Lilu.kext`) for enabling third-party Bluetooth controllers on modern macOS.
 * **Upstream Foundations:** Built upon `SimpleMtkWlan` (laobamac), `zxystd`'s macOS Wi-Fi framework, OpenBSD's `mwx` / `net80211`, and Acidanthera's `MacKernelSDK`.
 
 ---

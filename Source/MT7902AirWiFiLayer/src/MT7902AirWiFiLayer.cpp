@@ -176,6 +176,24 @@ OSDefineMetaClassAndStructors(MT7902AirWiFiLayerPCI, IOService)
 static thread_call_t gYYAutoCall;
 static void yy_autoarm_fire(thread_call_param_t p0, thread_call_param_t);
 
+static void setBuiltInProperty(IOService *service)
+{
+    if (service == nullptr)
+        return;
+    const UInt8 builtIn = 1;
+    OSData *data = OSData::withBytes(&builtIn, sizeof(builtIn));
+    if (data == nullptr)
+        return;
+    IOService *cur = service;
+    int depth = 0;
+    while (cur != nullptr && depth < 8) {
+        cur->setProperty("built-in", data);
+        cur = cur->getProvider();
+        depth++;
+    }
+    data->release();
+}
+
 IOService *MT7902AirWiFiLayerPCI::probe(IOService *provider, SInt32 *score)
 {
     if (IOService::probe(provider, score) == nullptr)
@@ -215,8 +233,8 @@ bool MT7902AirWiFiLayerPCI::start(IOService *provider)
                  provider->getName());
     }
 
-    UInt8 builtIn = 0;
-    setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
+    setBuiltInProperty(this);
+    setBuiltInProperty(provider);
     PMinit();
     registerPowerDriver(this, gYYPowerStates, 2);
     if (fPci != nullptr)
@@ -1197,9 +1215,9 @@ IOReturn MT7902AirWiFiLayerBSDInterface::attachToDataLinkLayer(IOOptionBits opti
     yy_trace("BSDIF: attachToDataLinkLayer = 0x%x ifnet=%p\n", ret, getIfnet());
     if (ret == kIOReturnSuccess && fSky != nullptr && getIfnet() != nullptr) {
         char name[IFNAMSIZ];
-        UInt8 builtIn = 0;
         snprintf(name, sizeof(name), "%s%u", ifnet_name(getIfnet()), ifnet_unit(getIfnet()));
-        fSky->setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
+        setBuiltInProperty(fSky);
+        setBuiltInProperty(this);
         fSky->setProperty("IOInterfaceName", OSString::withCString(name));
         fSky->setProperty(kIOInterfaceUnit, OSNumber::withNumber(ifnet_unit(getIfnet()), 8));
         fSky->setProperty(kIOInterfaceNamePrefix, OSString::withCString(ifnet_name(getIfnet())));
@@ -1293,8 +1311,8 @@ bool MT7902AirWiFiLayer::start(IOService *provider)
         return false;
     }
     yy_trace("CTRL: start provider=%s\n", provider ? provider->getName() : "-");
-    UInt8 builtIn = 0;
-    setProperty("built-in", OSData::withBytes(&builtIn, sizeof(builtIn)));
+    setBuiltInProperty(this);
+    setBuiltInProperty(provider);
     setProperty("DriverKitDriver", kOSBooleanFalse);
 
     if (!IO80211Controller::start(provider)) {
@@ -1332,6 +1350,8 @@ bool MT7902AirWiFiLayer::start(IOService *provider)
     yy_trace("CTRL: role/id set, role=%u\n", (unsigned)fNetIf->getInterfaceRole());
 
     ok = fNetIf->attach(this);
+    if (ok)
+        setBuiltInProperty(fNetIf);
     yy_trace("CTRL: interface attach = %d\n", ok);
     if (!ok)
         return false;

@@ -473,9 +473,9 @@ static void yy_bt_nvram(MtkHalService *hal, IOService *self)
         return;
     }
     chip = hal != NULL && hal->getDriverInfo() != NULL ? hal->getDriverInfo()->getFirmwareVersion() : NULL;
-    if (chip == NULL || strcmp(chip, "MT7922") != 0) {
+    if (chip == NULL || (strcmp(chip, "MT7922") != 0 && strcmp(chip, "MT7902") != 0)) {
         smtw_trace("BT: NVRAM setup skipped (chip %s)\n", chip ? chip : "?");
-        self->setProperty("yyavic-bt", "skipped (not MT7922)");
+        self->setProperty("yyavic-bt", "skipped (not MT7922/MT7902)");
         return;
     }
     nv = IORegistryEntry::fromPath("/options", gIODTPlane);

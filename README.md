@@ -11,7 +11,7 @@ Native macOS Wi-Fi 6 kernel extension and Bluetooth setup guide for the **MediaT
 
 | Component | Status | Notes |
 | :--- | :--- | :--- |
-| **Wi-Fi (MT7902)** | **Fixed** | Native `IO80211` / `Skywalk` integration for macOS Tahoe (26) & Sequoia (15) on AMD Ryzen 7 |
+| **Wi-Fi (MT7902)** | **Supported** | Native `IO80211` / `Skywalk` integration for macOS Tahoe (26) & Sequoia (15) on AMD Ryzen 7 |
 | **Bluetooth (MT7902)** | **Supported** | Supported via `SimpleMtkBtFw` (MT7902 patched fork) + `SimpleMtkBtPatcher` + `BlueToolFixup` |
 
 ---

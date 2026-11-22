@@ -511,6 +511,18 @@ static void yy_bt_nvram(MtkHalService *hal, IOService *self)
     self->setProperty("mt7902-bt", res);
 }
 
+static void setMtkBuiltInProperty(IOService *service)
+{
+    if (service == nullptr)
+        return;
+    const UInt8 builtIn = 1;
+    OSData *data = OSData::withBytes(&builtIn, sizeof(builtIn));
+    if (data == nullptr)
+        return;
+    service->setProperty("built-in", data);
+    data->release();
+}
+
 bool MT7902MtkWlan::start(IOService *provider)
 {
     int boot_value = 0;
@@ -526,6 +538,8 @@ bool MT7902MtkWlan::start(IOService *provider)
     if (!pciNub) {
         { smtw_trace("start FAIL at line %d\n", __LINE__); smtw_publish(); return false; }
     }
+    setMtkBuiltInProperty(this);
+    setMtkBuiltInProperty(pciNub);
     smtw_trace("PCI cfg before: cmd=0x%04x cap_ptr=0x%02x d40=0x%08x d44=0x%08x d48=0x%08x\n",
         pciNub->configRead16(0x04), pciNub->configRead8(0x34), pciNub->configRead32(0x40), pciNub->configRead32(0x44), pciNub->configRead32(0x48));
     pciNub->setBusMasterEnable(true);

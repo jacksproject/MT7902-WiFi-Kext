@@ -8298,7 +8298,7 @@ mwx_poll_timer_fire(OSObject *, IOTimerEventSource *t)
 			gPollCalls++;
 		}
 		mwx_rx_refill_check(sc);	/* MT7902: RX halkasi doldurma tekrar */
-		if (sc->sc_amsdu_n > 0 && ++sc->sc_amsdu_idle >= 3) {
+		if (sc->sc_amsdu_n > 0 && ++sc->sc_amsdu_idle >= 2) {
 			/* MT7902: A-MSDU left incomplete for ~2 polls: deliver it */
 			struct mbuf_list ml = MBUF_LIST_INITIALIZER();
 			gYYAmsduFlushEnd++;

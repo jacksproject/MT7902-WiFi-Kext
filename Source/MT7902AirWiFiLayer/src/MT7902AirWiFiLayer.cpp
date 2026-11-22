@@ -2086,8 +2086,12 @@ IOReturn MT7902AirWiFiLayer::joinAbort()
         *(uint32_t *)(ev + 8) = 0;
         yy_ctrl_postMessage(this, fNetIf, YY_MSG_LINK, ev, sizeof(ev), true);
         fLinked = false;
+        fLinkRsn = false;
+        fLinkDownTicks = 0;
         linkStateReport(false);
         dataDetach();
+    } else {
+        fLinkDownTicks = 0;
     }
     return kIOReturnSuccess;
 }

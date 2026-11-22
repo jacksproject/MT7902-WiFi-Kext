@@ -1233,8 +1233,21 @@ static IOReturn yy_radio_gate_body(OSObject *owner, void *a0)
             if (ni->ni_txrate >= 0 && ni->ni_txrate < ni->ni_rates.rs_nrates)
                 st->tx_rate_mbps = (ni->ni_rates.rs_rates[ni->ni_txrate] & IEEE80211_RATE_VAL) / 2;
             if (ic->ic_state == IEEE80211_S_RUN) {
-                uint8_t rx[5];
+                static uint8_t s_bw, s_center, s_rx[5];
+                uint8_t rx[5] = { 0 };
                 mwx_yy_link_info(ic, &st->bss_bw, &st->center, rx);
+                if (st->bss_bw != 0 || st->center != 0) {
+                    s_bw = st->bss_bw;
+                    s_center = st->center;
+                } else {
+                    st->bss_bw = s_bw;
+                    st->center = s_center;
+                }
+                if (rx[0] != 0) {
+                    memcpy(s_rx, rx, sizeof(s_rx));
+                } else if (s_rx[0] != 0) {
+                    memcpy(rx, s_rx, sizeof(rx));
+                }
                 st->rx_mode = rx[0]; st->rx_mcs = rx[1]; st->rx_nss = rx[2]; st->rx_bw = rx[3]; st->rx_sgi = rx[4];
             }
             st->he_link = (ni->ni_flags & IEEE80211_NODE_HE) != 0;

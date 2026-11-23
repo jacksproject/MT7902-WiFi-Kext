@@ -52,7 +52,6 @@
 #include <FwData.h>
 
 #include "if_mwxreg.h"
-#include "../mt7902_radio.h"	/* ABI 7: monitor mode / raw RX tap */
 
 OSDefineMetaClassAndStructors(MtkMwx, MtkHalService)
 
@@ -115,6 +114,13 @@ static struct mwx_softc *gMwxPollSc;
 static volatile UInt32 gMwxPollEnable;
 static volatile UInt32 gMwxIntrCalls;
 static volatile UInt32 gMwxPollFires;
+
+/* AWDL staging integration state for MT7902 (disabled unless boot-arg enabled). */
+enum : uint16_t { MWX_AWDL_TX_BA_FLAG = 0x8 };
+static volatile uint32_t gMwxAwdlEnabled = 0;
+static volatile uint32_t gMwxAwdlInfraPs = 0;
+static volatile uint32_t gMwxAwdlChanSwitches = 0;
+
 static volatile int gMwxTrapMode = 1;
 /* R9T trace34: TX sayaclari (dbg 19/21) ve geri basinc (dbg 20) */
 static uint32_t gTxDeq, gTxOk, gTxNoTxwi, gTxRingFull, gTxMapFail, gTxOactSet, gTxRestart, gTxFreeEv, gTxFreed;
@@ -1976,70 +1982,6 @@ mwx_amsdu_add(struct mwx_softc *sc, struct mbuf *m, struct ieee80211_rxinfo *rxi
 		mwx_amsdu_flush(sc, ml);
 }
 
-/*
- * AWDL milestone 1: raw 802.11 RX tap for monitor mode (radio ABI 7).
- * mwx_rx() calls this for every received frame while ic_opmode is
- * IEEE80211_M_MONITOR; m starts at the MAC header (mt7921_mac_fill_rx has
- * already stripped the RX descriptor). The tap only reads, it never consumes
- * the mbuf. AWDL frames are 802.11 action frames: category 127 (vendor
- * specific), Apple OUI 00:17:F2, OUI type 8, then version and subtype
- * (0 = PSF, 3 = MIF).
- */
-extern "C" {
-void (*yy_mon_hook_fn)(void *, const uint8_t *, uint32_t, const struct yy_radio_rxmeta *);
-void *yy_mon_hook_ctx;
-}
-static struct yy_radio_mon_stats gYYMon;
-static uint32_t gYYMonLogAwdl;
-
-extern "C" void
-mwx_yy_mon_stats(struct yy_radio_mon_stats *out)
-{
-	if (out != NULL)
-		*out = gYYMon;
-}
-
-static void
-mwx_yy_mon_tap(struct mwx_softc *sc, struct mbuf *m, struct ieee80211_rxinfo *rxi)
-{
-	const uint8_t *f = mtod(m, const uint8_t *);
-	size_t len = mbuf_len(m);
-
-	gYYMon.frames++;
-	if (len >= sizeof(struct ieee80211_frame) &&
-	    (f[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT) {
-		gYYMon.mgmt++;
-		if ((f[0] & IEEE80211_FC0_SUBTYPE_MASK) == IEEE80211_FC0_SUBTYPE_ACTION) {
-			gYYMon.action++;
-			/* 24 byte MAC header, then category, OUI, OUI type, version, subtype.
-			 * (A frame with the +HTC order bit set would shift this by 4; AWDL
-			 * action frames are not sent that way.) */
-			if (len >= 24 + 7 && f[24] == 0x7f && f[25] == 0x00 &&
-			    f[26] == 0x17 && f[27] == 0xf2 && f[28] == 0x08) {
-				uint8_t st = f[30];
-				gYYMon.awdl++;
-				if (st == 0)
-					gYYMon.awdl_psf++;
-				else if (st == 3)
-					gYYMon.awdl_mif++;
-				if (gYYMonLogAwdl && (gYYMon.awdl <= 64 || (gYYMon.awdl % 256) == 0))
-					MWX_DEV_LOG(sc,
-					    "AWDL #%u chan=%u rssi=%d len=%zu subtype=%u ver=0x%02x src=%s (psf=%u mif=%u of %u mgmt)\n",
-					    gYYMon.awdl, rxi->rxi_chan, (int)rxi->rxi_rssi, len, st, f[29],
-					    ether_sprintf(f + 10), gYYMon.awdl_psf, gYYMon.awdl_mif, gYYMon.mgmt);
-			}
-		}
-	}
-	if (yy_mon_hook_fn != NULL) {
-		struct yy_radio_rxmeta meta;
-		memset(&meta, 0, sizeof(meta));
-		meta.channel = (uint8_t)rxi->rxi_chan;
-		meta.rssi_raw = (int32_t)rxi->rxi_rssi;
-		meta.tsf = 0;	/* TODO: the RX descriptor's timestamp is not carried in rxi yet */
-		yy_mon_hook_fn(yy_mon_hook_ctx, f, (uint32_t)len, &meta);
-	}
-}
-
 void
 mwx_rx(struct mwx_softc *sc, struct mbuf *m, struct mbuf_list *ml)
 {
@@ -2080,8 +2022,6 @@ mwx_rx(struct mwx_softc *sc, struct mbuf *m, struct mbuf_list *ml)
 		mwx_amsdu_flush(sc, ml);
 
 	wh = mtod(m, struct ieee80211_frame *);
-	if (ic->ic_opmode == IEEE80211_M_MONITOR)
-		mwx_yy_mon_tap(sc, m, &rxi);
 	if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_DATA) {
 		gRxData++;
 		if (wh->i_fc[1] & IEEE80211_FC1_RETRY)
@@ -8186,21 +8126,6 @@ MtkMwx::enable(IONetworkInterface *interface)
 		return kIOReturnSuccess;
 	}
 	ifp->if_flags |= IFF_UP;
-	{
-		/* AWDL milestone 1 test hook: boot-arg mt7902-awdlmon=<channel> (6, 44 or 149)
-		 * starts the radio in monitor mode on that channel and logs AWDL frames.
-		 * Use together with -mt7902off so the native Wi-Fi layer stays out of it. */
-		uint32_t monchan = 0;
-		struct ieee80211com *mic = &com->sc_ic;
-		if (PE_parse_boot_argn("mt7902-awdlmon", &monchan, sizeof(monchan)) &&
-		    monchan > 0 && monchan < IEEE80211_CHAN_MAX &&
-		    mic->ic_channels[monchan].ic_freq != 0) {
-			mic->ic_opmode = IEEE80211_M_MONITOR;
-			mic->ic_ibss_chan = &mic->ic_channels[monchan];
-			gYYMonLogAwdl = 1;
-			MWX_DEV_LOG(com, "AWDL monitor requested by boot-arg: channel %u\n", monchan);
-		}
-	}
 	int rv = mwx_init(ifp);
 	MWX_DEV_LOG(com, "HAL enable done mwx_init=%d flags=0x%x\n",
 	    rv, ifp->if_flags);
@@ -8307,61 +8232,6 @@ MtkMwx::setOwnAddress(const uint8_t *mac)
 	MWX_DEV_LOG(com, "own address now %s (mode %u, up %d) = 0x%x in %u ms, %u fw timeouts\n",
 	    ether_sprintf(ic->ic_myaddr), gYYMacUsed, up, r, gYYMacMs, gYYMacTo);
 	return r;
-}
-
-/*
- * ABI 7: switch between station and monitor mode, or retune in monitor mode.
- * Entering monitor mode drops the association (a deauth goes out first); the
- * interface is cycled like an ifconfig media change (mwx_stop + mwx_init), and
- * mwx_init() brings the firmware up in sniffer mode on ic_ibss_chan. Leaving
- * does the same with ic_opmode back to STA, which scans again.
- */
-IOReturn
-MtkMwx::setMonitor(bool on, uint8_t channel, bool logAwdl)
-{
-	if (com == NULL)
-		return kIOReturnNotAttached;
-	struct ieee80211com *ic = &com->sc_ic;
-	struct ifnet *ifp = &ic->ic_if;
-	bool running = (ifp->if_flags & (IFF_UP | IFF_RUNNING)) == (IFF_UP | IFF_RUNNING);
-	int rv = 0;
-
-	gYYMonLogAwdl = logAwdl ? 1 : 0;
-	if (!on) {
-		if (ic->ic_opmode != IEEE80211_M_MONITOR)
-			return kIOReturnSuccess;
-		ic->ic_opmode = IEEE80211_M_STA;
-		if (running) {
-			mwx_stop(ifp);
-			rv = mwx_init(ifp);
-		}
-		MWX_DEV_LOG(com, "monitor off = %d\n", rv);
-		return rv == 0 ? kIOReturnSuccess : kIOReturnError;
-	}
-	if (channel == 0 || channel >= IEEE80211_CHAN_MAX || ic->ic_channels[channel].ic_freq == 0)
-		return kIOReturnBadArgument;
-	if (ic->ic_opmode == IEEE80211_M_MONITOR) {
-		/* already sniffing: only retune. mt7921_set_channel() takes the
-		 * channel from ic_ibss_chan when not in station mode. */
-		ic->ic_ibss_chan = &ic->ic_channels[channel];
-		if (ic->ic_bss != NULL)
-			ic->ic_bss->ni_chan = ic->ic_ibss_chan;
-		rv = running ? mt7921_set_channel(com) : 0;
-		MWX_DEV_LOG(com, "monitor retune to %u = %d\n", channel, rv);
-		return rv == 0 ? kIOReturnSuccess : kIOReturnError;
-	}
-	if (ic->ic_state > IEEE80211_S_AUTH && ic->ic_bss != NULL) {
-		IEEE80211_SEND_MGMT(ic, ic->ic_bss, IEEE80211_FC0_SUBTYPE_DEAUTH, IEEE80211_REASON_AUTH_LEAVE);
-		IOSleep(30);	/* let the deauth out before the device goes down */
-	}
-	ic->ic_opmode = IEEE80211_M_MONITOR;
-	ic->ic_ibss_chan = &ic->ic_channels[channel];
-	if (running) {
-		mwx_stop(ifp);
-		rv = mwx_init(ifp);
-	}
-	MWX_DEV_LOG(com, "monitor on, channel %u = %d\n", channel, rv);
-	return rv == 0 ? kIOReturnSuccess : kIOReturnError;
 }
 
 struct ieee80211com *
@@ -9123,6 +8993,11 @@ mwx_dbg(uint32_t op, uint32_t a, uint32_t b, char *out, size_t outlen)
 		    bni ? bni->ni_vhtcaps : 0, bni ? bni->ni_he_cap_elem.phy_cap_info[0] : 0,
 		    bni ? bni->ni_chw : 0, bw, c,
 		    (bni && bni->ni_chan && bni->ni_chan != IEEE80211_CHAN_ANYC) ? bni->ni_chan->ic_center_freq1 : 0);
+		break;
+	}
+	case 42: {	/* MT7902 AWDL staging state */
+		snprintf(out, outlen, "awdl_en=%u infra_ps=%u chan_sw=%u",
+		    (unsigned)gMwxAwdlEnabled, (unsigned)gMwxAwdlInfraPs, (unsigned)gMwxAwdlChanSwitches);
 		break;
 	}
 	case 41: {	/* MT7902: son 8 ieee80211_new_state istegi (kim, nerede, hangi duruma) */

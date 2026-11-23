@@ -138,6 +138,34 @@ static IO80211WorkQueue *gYYWorkQueue;
  * registerService(), probe() and start(), and every blocked attempt records
  * its (unslid) call chain.
  */
+
+/* ----------------------------------------------------- AWDL (port) -- */
+/* Boot-arg gated AWDL state ported from Dino-VN/MtkWireless staging.
+ * Disabled by default until enabled via boot-arg mt7902_awdl=1 / -mt7902awdl. */
+static volatile int gYYAwdlEnabled = 0;
+static volatile uint32_t gYYAwdlState = 0;
+static volatile uint32_t gYYAwdlTxFrames = 0;
+static volatile uint32_t gYYAwdlRxFrames = 0;
+
+extern "C" int yy_awdl_is_enabled(void)
+{
+    return gYYAwdlEnabled != 0 ? 1 : 0;
+}
+
+static void yy_awdl_init_from_boot_args(void)
+{
+    int awdl_val = 0;
+    if (PE_parse_boot_argn("mt7902_awdl", &awdl_val, sizeof(awdl_val)) && awdl_val != 0) {
+        gYYAwdlEnabled = 1;
+        yy_trace("AWDL: enabled via boot-arg mt7902_awdl=%d (staging port)\n", awdl_val);
+    } else if (PE_parse_boot_argn("-mt7902awdl", &awdl_val, sizeof(awdl_val))) {
+        gYYAwdlEnabled = 1;
+        yy_trace("AWDL: enabled via boot-arg -mt7902awdl (staging port)\n");
+    } else {
+        gYYAwdlEnabled = 0;
+    }
+}
+
 static volatile bool gYYArmed;
 /* Chosen at arm time: 0 = legacy BSD interface (AirportItlwm scheme),
  * 1 = Skywalk netif datapath (research, BSD client). */
@@ -217,6 +245,7 @@ bool MT7902AirWiFiLayerPCI::start(IOService *provider)
 {
     yy_trace_start(this);
     yy_trace("MT7902AirWiFiLayer 2a: PCI start\n");
+    yy_awdl_init_from_boot_args();
     if (gYYWorkQueue == nullptr)
         gYYWorkQueue = IO80211WorkQueue::workQueue();
     yy_trace("PCI: workQueue=%p\n", gYYWorkQueue);

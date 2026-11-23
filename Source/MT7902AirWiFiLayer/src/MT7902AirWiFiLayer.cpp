@@ -185,6 +185,35 @@ static void yy_awdl_stage_init(IOService *svc)
         svc->setProperty("mt7902-awdl-stage", st == YY_AWDL_ST_GATED_READY ? "gated-ready" : "disabled");
 }
 
+
+/* Adapter helpers mapping AirportMtkAwdlInterface owner/controller calls onto
+ * MT7902AirWiFiLayer when gYYAwdlEnabled is active (mt7902_awdl=1 / -mt7902awdl). */
+extern "C" void yy_awdl_ctrl_record_creation(void *ctrl, const char *stage, int status)
+{
+    MT7902AirWiFiLayer *c = static_cast<MT7902AirWiFiLayer *>(ctrl);
+    if (!yy_awdl_is_enabled())
+        return;
+    yy_trace("AWDL-IF: stage=%s status=0x%x ctrl=%p\n", stage ? stage : "?", (unsigned)status, c);
+    if (c != nullptr && stage != nullptr)
+        c->setProperty("mt7902-awdl-stage", stage);
+}
+
+extern "C" void *yy_awdl_ctrl_workloop(void *ctrl)
+{
+    MT7902AirWiFiLayer *c = static_cast<MT7902AirWiFiLayer *>(ctrl);
+    if (c != nullptr)
+        return c->getWorkLoop();
+    return gYYWorkQueue;
+}
+
+extern "C" void yy_awdl_ctrl_set_prop(void *ctrl, const char *key, uint32_t val)
+{
+    MT7902AirWiFiLayer *c = static_cast<MT7902AirWiFiLayer *>(ctrl);
+    if (!yy_awdl_is_enabled() || c == nullptr || key == nullptr)
+        return;
+    c->setProperty(key, val, 32);
+}
+
 static volatile bool gYYArmed;
 /* Chosen at arm time: 0 = legacy BSD interface (AirportItlwm scheme),
  * 1 = Skywalk netif datapath (research, BSD client). */

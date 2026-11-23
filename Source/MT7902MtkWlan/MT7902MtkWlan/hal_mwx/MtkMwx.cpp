@@ -116,9 +116,7 @@ static volatile UInt32 gMwxIntrCalls;
 static volatile UInt32 gMwxPollFires;
 
 /* AWDL staging integration state for MT7902 (disabled unless boot-arg enabled). */
-enum : uint16_t { MWX_AWDL_TX_BA_FLAG = 0x8 };
 static volatile uint32_t gMwxAwdlEnabled = 0;
-static volatile uint32_t gMwxAwdlInfraPs = 0;
 static volatile uint32_t gMwxAwdlChanSwitches = 0;
 
 static volatile int gMwxTrapMode = 1;
@@ -148,7 +146,7 @@ static uint32_t gYYAmsduFlushSeq, gYYAmsduFlushEnd, gYYAmsduFlushFull, gYYAmsduA
 #define	MWX_RXI_AMSDU_MASK	(3U << MWX_RXI_AMSDU_SHIFT)
 static uint32_t gYYRxHe, gYYRxHeMcs[16];	/* MT7902 dbg 33: HE RX frames */
 /* MT7902 perf (dbg 32): cumulative mach_absolute_time per stage on the radio work loop */
-static uint64_t gYYDqRd, gYYDqSync, gYYDqUnl, gYYDqRest, gYYDqEnd, gYYDqPkts, gYYDqCalls, gYYDqMaxCall, gYYDqRdN;
+static uint64_t gYYDqRd, gYYDqSync, gYYDqUnl, gYYDqEnd, gYYDqPkts, gYYDqCalls, gYYDqMaxCall, gYYDqRdN;
 static uint64_t gYYPfIntr, gYYPfDeq, gYYPfFill, gYYPfProc, gYYPfIfIn, gYYPfStart, gYYPfTxDone;
 static uint32_t gYYPfIntrN, gYYPfRxPkts, gYYPfRxCalls, gYYPfStartN;
 extern "C" volatile int gCompatIntrIndex, gCompatIntrType;
@@ -292,14 +290,6 @@ static inline size_t
 m_trailingspace(struct mbuf *m)
 {
 	return mbuf_trailingspace(m);
-}
-
-static inline struct mbuf *
-m_gethdr(int how, int type)
-{
-	struct mbuf *m = NULL;
-	mbuf_gethdr(how, type, &m);
-	return m;
 }
 
 static inline struct mbuf *
@@ -7269,6 +7259,8 @@ mt7921_set_channel(struct mwx_softc *sc)
 	// XXX NOTYET mt76_set_channel(sc);
 
 	rv = mt7921_mcu_set_chan_info(sc, MCU_EXT_CMD_CHANNEL_SWITCH);
+	if (rv == 0 && __atomic_load_n(&gMwxAwdlEnabled, __ATOMIC_ACQUIRE))
+		__atomic_fetch_add(&gMwxAwdlChanSwitches, 1, __ATOMIC_RELAXED);
 	if (rv)
 		return rv;
 	/* R9T trace30: Linux __mt7921_start'taki RX yolu (anten/akis) yapilandirmasi; STA'da hic gonderilmiyordu */
@@ -9003,8 +8995,8 @@ mwx_dbg(uint32_t op, uint32_t a, uint32_t b, char *out, size_t outlen)
 		break;
 	}
 	case 42: {	/* MT7902 AWDL staging state */
-		snprintf(out, outlen, "awdl_en=%u infra_ps=%u chan_sw=%u hw7902=%d",
-		    (unsigned)gMwxAwdlEnabled, (unsigned)gMwxAwdlInfraPs, (unsigned)gMwxAwdlChanSwitches,
+		snprintf(out, outlen, "awdl_en=%u chan_sw=%u hw7902=%d",
+		    (unsigned)gMwxAwdlEnabled, (unsigned)gMwxAwdlChanSwitches,
 		    (int)MWX_IS_7902(sc));
 		break;
 	}
@@ -9032,7 +9024,7 @@ mwx_dbg(uint32_t op, uint32_t a, uint32_t b, char *out, size_t outlen)
 		    YYMS2(gYYDqSync), YYMS2(gYYDqUnl), YYMS2(gYYDqEnd), YYMS2(gYYDqMaxCall));
 #undef YYMS2
 		if (a == 1)
-			gYYDqRd = gYYDqSync = gYYDqUnl = gYYDqRest = gYYDqEnd = gYYDqPkts = gYYDqCalls = gYYDqMaxCall = gYYDqRdN = 0;
+			gYYDqRd = gYYDqSync = gYYDqUnl = gYYDqEnd = gYYDqPkts = gYYDqCalls = gYYDqMaxCall = gYYDqRdN = 0;
 		break;
 	}
 	case 38: {	/* MT7902 0.7.3 own-address change: a=10 full cycle (default), a=11 re-add only; timing + fw timeouts */

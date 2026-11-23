@@ -186,6 +186,16 @@ static void yy_awdl_stage_init(IOService *svc)
 }
 
 
+static void yy_awdl_publish_requirements(IOService *svc, bool enabled)
+{
+    if (svc == nullptr)
+        return;
+    svc->setProperty("MT7902AWDLRequirements",
+        enabled ? "macOS 26 Tahoe (25G332), MT7902 (14c3:7902), mt7902_awdl=1, awdl0 + NDP"
+                : "macOS 26 Tahoe (25G332), MT7902 (14c3:7902), mt7902_awdl=1 to enable");
+}
+
+
 /* Adapter helpers mapping AirportMtkAwdlInterface owner/controller calls onto
  * MT7902AirWiFiLayer when gYYAwdlEnabled is active (mt7902_awdl=1 / -mt7902awdl). */
 extern "C" void yy_awdl_ctrl_record_creation(void *ctrl, const char *stage, int status)
@@ -295,6 +305,7 @@ bool MT7902AirWiFiLayerPCI::start(IOService *provider)
     yy_trace("MT7902AirWiFiLayer 2a: PCI start\n");
     yy_awdl_init_from_boot_args();
     yy_awdl_stage_init(this);
+    yy_awdl_publish_requirements(this, yy_awdl_is_enabled() != 0);
     if (gYYWorkQueue == nullptr)
         gYYWorkQueue = IO80211WorkQueue::workQueue();
     yy_trace("PCI: workQueue=%p\n", gYYWorkQueue);

@@ -221,23 +221,17 @@ extern "C" void yy_awdl_ctrl_set_prop(void *ctrl, const char *key, uint32_t val)
 }
 
 
-class AirportMtkAwdlInterface;
-
 extern "C" void yy_awdl_ctrl_record_creation(void *ctrl, const char *stage, int status);
 
-static AirportMtkAwdlInterface *gYYAwdlIf = nullptr;
+static volatile uint32_t gYYAwdlIfaceStageActive = 0;
 
 static void yy_awdl_iface_start(MT7902AirWiFiLayer *ctrl, IOService *provider, const ether_addr *mac)
 {
-    if (!yy_awdl_is_enabled() || ctrl == nullptr || gYYAwdlIf != nullptr)
+    (void)provider;
+    if (!yy_awdl_is_enabled() || ctrl == nullptr)
         return;
-
-    yy_awdl_ctrl_record_creation(ctrl, "awdl-alloc", kIOReturnNotReady);
-    AirportMtkAwdlInterface *awdl = OSTypeAlloc(AirportMtkAwdlInterface);
-    if (awdl == nullptr) {
-        yy_awdl_ctrl_record_creation(ctrl, "awdl-alloc-failed", kIOReturnNoMemory);
+    if (__atomic_exchange_n(&gYYAwdlIfaceStageActive, 1u, __ATOMIC_ACQ_REL) != 0)
         return;
-    }
 
     ether_addr awdlMac;
     if (mac != nullptr) {
@@ -246,43 +240,18 @@ static void yy_awdl_iface_start(MT7902AirWiFiLayer *ctrl, IOService *provider, c
         static const uint8_t fallback[6] = { 0x02, 0x59, 0x59, 0x7a, 0x92, 0x23 };
         memcpy(awdlMac.octet, fallback, sizeof(fallback));
     }
-
-    if (!awdl->init(nullptr)) {
-        yy_awdl_ctrl_record_creation(ctrl, "awdl-init-failed", kIOReturnError);
-        awdl->release();
-        return;
-    }
-
-    if (!awdl->attach(ctrl)) {
-        yy_awdl_ctrl_record_creation(ctrl, "awdl-attach-failed", kIOReturnError);
-        awdl->release();
-        return;
-    }
-
-    if (!awdl->start(provider ? provider : ctrl)) {
-        yy_awdl_ctrl_record_creation(ctrl, "awdl-start-failed", kIOReturnError);
-        awdl->detach(ctrl);
-        awdl->release();
-        return;
-    }
-
-    awdl->registerService(kIOServiceAsynchronous);
-    gYYAwdlIf = awdl;
+    yy_trace("AWDL-IF: staging mac=%02x:%02x:%02x:%02x:%02x:%02x (iface class decoupled)\n",
+             awdlMac.octet[0], awdlMac.octet[1], awdlMac.octet[2],
+             awdlMac.octet[3], awdlMac.octet[4], awdlMac.octet[5]);
     __atomic_store_n(&gYYAwdlState, YY_AWDL_ST_GATED_READY, __ATOMIC_RELEASE);
-    ctrl->setProperty("mt7902-awdl-stage", "iface-registered");
-    yy_awdl_ctrl_record_creation(ctrl, "awdl-registered", kIOReturnSuccess);
+    ctrl->setProperty("mt7902-awdl-stage", "gated-ready");
+    yy_awdl_ctrl_record_creation(ctrl, "gated-ready", kIOReturnSuccess);
 }
 
 static void yy_awdl_iface_stop(MT7902AirWiFiLayer *ctrl)
 {
-    AirportMtkAwdlInterface *awdl = gYYAwdlIf;
-    gYYAwdlIf = nullptr;
-    if (awdl == nullptr)
+    if (__atomic_exchange_n(&gYYAwdlIfaceStageActive, 0u, __ATOMIC_ACQ_REL) == 0)
         return;
-
-    awdl->stop(ctrl);
-    awdl->detach(ctrl);
-    awdl->release();
     if (ctrl != nullptr && yy_awdl_is_enabled())
         ctrl->setProperty("mt7902-awdl-stage", "stopped");
 }

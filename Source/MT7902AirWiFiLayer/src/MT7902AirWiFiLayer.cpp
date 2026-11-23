@@ -144,8 +144,6 @@ static IO80211WorkQueue *gYYWorkQueue;
  * Disabled by default until enabled via boot-arg mt7902_awdl=1 / -mt7902awdl. */
 static volatile int gYYAwdlEnabled = 0;
 static volatile uint32_t gYYAwdlState = 0;
-static volatile uint32_t gYYAwdlTxFrames = 0;
-static volatile uint32_t gYYAwdlRxFrames = 0;
 
 extern "C" int yy_awdl_is_enabled(void)
 {
@@ -172,9 +170,7 @@ static void yy_awdl_init_from_boot_args(void)
  * gYYAwdlEnabled (mt7902_awdl=1 / -mt7902awdl) so primary Wi-Fi stays safe. */
 enum : uint32_t {
     YY_AWDL_ST_DISABLED = 0,
-    YY_AWDL_ST_GATED_READY = 1,
-    YY_AWDL_ST_IFACE_PENDING = 2,
-    YY_AWDL_ST_IFACE_ACTIVE = 3
+    YY_AWDL_ST_GATED_READY = 1
 };
 
 static void yy_awdl_stage_init(IOService *svc)

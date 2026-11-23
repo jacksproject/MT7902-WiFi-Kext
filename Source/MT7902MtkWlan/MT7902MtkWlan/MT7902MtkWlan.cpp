@@ -199,17 +199,6 @@ bool MT7902MtkWlan::init(OSDictionary *properties)
 #define  PCI_MSIX_FLAGS_ENABLE    0x8000    /* MSI-X enable */
 #define  PCI_MSI_FLAGS_ENABLE    0x0001    /* MSI feature enabled */
 
-static void pciMsiSetEnable(IOPCIDevice *device, UInt8 msiCap, int enable)
-{
-    u16 control;
-    
-    control = device->configRead16(msiCap + PCI_MSI_FLAGS);
-    control &= ~PCI_MSI_FLAGS_ENABLE;
-    if (enable)
-        control |= PCI_MSI_FLAGS_ENABLE;
-    device->configWrite16(msiCap + PCI_MSI_FLAGS, control);
-}
-
 static void pciMsiXClearAndSet(IOPCIDevice *device, UInt8 msixCap, UInt16 clear, UInt16 set)
 {
     u16 ctrl;

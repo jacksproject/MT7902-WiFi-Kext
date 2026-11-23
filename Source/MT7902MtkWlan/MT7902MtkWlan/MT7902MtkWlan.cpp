@@ -39,6 +39,10 @@
 extern "C" { extern void (*yy_rx_hook_fn)(void *, void *); extern void *yy_rx_hook_ctx; }
 extern "C" int mwx_yy_hw_addr(uint8_t *out);
 extern "C" void mwx_yy_link_info(struct ieee80211com *ic, uint8_t *bss_bw, uint8_t *center, uint8_t *rx);
+/* ABI 7 monitor tap (hal_mwx/MtkMwx.cpp) */
+struct yy_radio_rxmeta; struct yy_radio_mon_stats;
+extern "C" { extern void (*yy_mon_hook_fn)(void *, const uint8_t *, uint32_t, const struct yy_radio_rxmeta *); extern void *yy_mon_hook_ctx; }
+extern "C" void mwx_yy_mon_stats(struct yy_radio_mon_stats *out);
 #include <net/ethernet.h>
 #include <crypto/sha1.h>
 #include <net80211/ieee80211_node.h>
@@ -1106,7 +1110,8 @@ void MT7902MtkWlan::associatePMK(const uint8_t *ssid, uint8_t ssid_len, const ui
 #include "mt7902_radio.h"
 
 enum { YY_RF_NONE, YY_RF_ABI, YY_RF_SCAN_START, YY_RF_SCAN_COPY, YY_RF_CHANNELS, YY_RF_JOIN, YY_RF_STATUS, YY_RF_LEAVE,
-       YY_RF_MAC, YY_RF_DATA_HOOK, YY_RF_TX, YY_RF_SET_MAC, YY_RF_POWER, YY_RF_HW_MAC };
+       YY_RF_MAC, YY_RF_DATA_HOOK, YY_RF_TX, YY_RF_SET_MAC, YY_RF_POWER, YY_RF_HW_MAC,
+       YY_RF_MONITOR, YY_RF_MON_HOOK };
 struct yy_radio_gate_args { int fn; void *p1, *p2; };
 
 static IOReturn yy_radio_gate_body(OSObject *owner, void *a0);
@@ -1333,6 +1338,24 @@ static IOReturn yy_radio_gate_body(OSObject *owner, void *a0)
         }
         return kIOReturnSuccess;
     }
+    case YY_RF_MONITOR: {
+        /* ABI 7: station <-> monitor mode, monitor channel */
+        const struct yy_radio_monitor *mon = (const struct yy_radio_monitor *)a->p1;
+        MtkMwx *hal = OSDynamicCast(MtkMwx, that->fHalService);
+        if (mon == NULL)
+            return kIOReturnBadArgument;
+        if (hal == NULL)
+            return kIOReturnUnsupported;
+        IOReturn r = hal->setMonitor(mon->enable != 0, mon->channel, mon->log_awdl != 0);
+        if (a->p2 != NULL)
+            mwx_yy_mon_stats((struct yy_radio_mon_stats *)a->p2);
+        return r;
+    }
+    case YY_RF_MON_HOOK:
+        /* On the gate; the RX path reads the pair without it, set ctx first. */
+        yy_mon_hook_ctx = a->p2;
+        yy_mon_hook_fn = (void (*)(void *, const uint8_t *, uint32_t, const struct yy_radio_rxmeta *))a->p1;
+        return kIOReturnSuccess;
     default:
         return kIOReturnUnsupported;
     }
@@ -1369,6 +1392,10 @@ IOReturn MT7902MtkWlan::callPlatformFunction(const OSSymbol *functionName, bool 
             fn = YY_RF_POWER;
         else if (functionName->isEqualTo(YY_RADIO_FN_HW_MAC))
             fn = YY_RF_HW_MAC;
+        else if (functionName->isEqualTo(YY_RADIO_FN_MONITOR))
+            fn = YY_RF_MONITOR;
+        else if (functionName->isEqualTo(YY_RADIO_FN_MON_HOOK))
+            fn = YY_RF_MON_HOOK;
     }
     if (fn == YY_RF_NONE)
         return super::callPlatformFunction(functionName, waitForFunction, param1, param2, param3, param4);

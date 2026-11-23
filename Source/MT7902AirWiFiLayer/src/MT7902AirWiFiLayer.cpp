@@ -220,6 +220,73 @@ extern "C" void yy_awdl_ctrl_set_prop(void *ctrl, const char *key, uint32_t val)
     c->setProperty(key, val, 32);
 }
 
+
+class AirportMtkAwdlInterface;
+
+extern "C" void yy_awdl_ctrl_record_creation(void *ctrl, const char *stage, int status);
+
+static AirportMtkAwdlInterface *gYYAwdlIf = nullptr;
+
+static void yy_awdl_iface_start(MT7902AirWiFiLayer *ctrl, IOService *provider, const ether_addr *mac)
+{
+    if (!yy_awdl_is_enabled() || ctrl == nullptr || gYYAwdlIf != nullptr)
+        return;
+
+    yy_awdl_ctrl_record_creation(ctrl, "awdl-alloc", kIOReturnNotReady);
+    AirportMtkAwdlInterface *awdl = OSTypeAlloc(AirportMtkAwdlInterface);
+    if (awdl == nullptr) {
+        yy_awdl_ctrl_record_creation(ctrl, "awdl-alloc-failed", kIOReturnNoMemory);
+        return;
+    }
+
+    ether_addr awdlMac;
+    if (mac != nullptr) {
+        memcpy(awdlMac.octet, mac->octet, sizeof(awdlMac.octet));
+    } else {
+        static const uint8_t fallback[6] = { 0x02, 0x59, 0x59, 0x7a, 0x92, 0x23 };
+        memcpy(awdlMac.octet, fallback, sizeof(fallback));
+    }
+
+    if (!awdl->init(nullptr)) {
+        yy_awdl_ctrl_record_creation(ctrl, "awdl-init-failed", kIOReturnError);
+        awdl->release();
+        return;
+    }
+
+    if (!awdl->attach(ctrl)) {
+        yy_awdl_ctrl_record_creation(ctrl, "awdl-attach-failed", kIOReturnError);
+        awdl->release();
+        return;
+    }
+
+    if (!awdl->start(provider ? provider : ctrl)) {
+        yy_awdl_ctrl_record_creation(ctrl, "awdl-start-failed", kIOReturnError);
+        awdl->detach(ctrl);
+        awdl->release();
+        return;
+    }
+
+    awdl->registerService(kIOServiceAsynchronous);
+    gYYAwdlIf = awdl;
+    __atomic_store_n(&gYYAwdlState, YY_AWDL_ST_GATED_READY, __ATOMIC_RELEASE);
+    ctrl->setProperty("mt7902-awdl-stage", "iface-registered");
+    yy_awdl_ctrl_record_creation(ctrl, "awdl-registered", kIOReturnSuccess);
+}
+
+static void yy_awdl_iface_stop(MT7902AirWiFiLayer *ctrl)
+{
+    AirportMtkAwdlInterface *awdl = gYYAwdlIf;
+    gYYAwdlIf = nullptr;
+    if (awdl == nullptr)
+        return;
+
+    awdl->stop(ctrl);
+    awdl->detach(ctrl);
+    awdl->release();
+    if (ctrl != nullptr && yy_awdl_is_enabled())
+        ctrl->setProperty("mt7902-awdl-stage", "stopped");
+}
+
 static volatile bool gYYArmed;
 /* Chosen at arm time: 0 = legacy BSD interface (AirportItlwm scheme),
  * 1 = Skywalk netif datapath (research, BSD client). */
@@ -1511,6 +1578,7 @@ bool MT7902AirWiFiLayer::start(IOService *provider)
 
     setLinkStatus(kIONetworkLinkValid);
     registerService();
+    yy_awdl_iface_start(this, provider, &fMac);
     yy_trace("CTRL: registered\n");
     return true;
 }
@@ -2823,6 +2891,7 @@ void MT7902AirWiFiLayer::joinTimerFired()
 void MT7902AirWiFiLayer::stop(IOService *provider)
 {
     yy_trace("CTRL: stop\n");
+    yy_awdl_iface_stop(this);
     dataDetach();
     gYYDataCtrl = nullptr;
     if (fRxES != nullptr) {

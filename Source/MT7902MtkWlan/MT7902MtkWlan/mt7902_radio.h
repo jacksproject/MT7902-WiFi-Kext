@@ -14,7 +14,7 @@
 
 #include <stdint.h>
 
-#define YY_RADIO_ABI            6   /* 2: + join/status/leave, 3: + mac/data hook/tx, 4: + power, 5: + link rate/width, 6: + full IEs, HE */
+#define YY_RADIO_ABI            7   /* 2: + join/status/leave, 3: + mac/data hook/tx, 4: + power, 5: + link rate/width, 6: + full IEs, HE, 7: + monitor mode / raw RX tap */
 
 #define YY_RADIO_FN_ABI         "yyRadioAbi"        /* p1: uint32_t *abi */
 #define YY_RADIO_FN_SCAN_START  "yyRadioScanStart"  /* p1: uint32_t *state (out, optional) */
@@ -112,6 +112,48 @@ struct yy_radio_status {
     uint8_t  he_link;           /* the current association is HE */
     char     country[2];        /* 0.7.1 (was reserved): the radio's country
                                  * code (mt7902-cc), "00" = world */
+};
+
+/*
+ * Monitor mode / raw 802.11 RX tap (ABI 7, AWDL milestone 1).
+ *
+ * yyRadioMonitor switches the radio between station and monitor mode and
+ * sets the monitor channel (while in monitor mode a second call only changes
+ * the channel). Entering monitor mode drops any association: the station
+ * link is down until it is called again with enable = 0.
+ *
+ * yyRadioMonHook attaches a receiver for every frame the radio sniffs in
+ * monitor mode: the raw 802.11 frame starting at the MAC header (no radiotap,
+ * no FCS). The hook runs on the radio's RX path: it must not block, must not
+ * call back into the radio and must not keep the pointer after returning.
+ */
+#define YY_RADIO_FN_MONITOR     "yyRadioMonitor"    /* p1: const yy_radio_monitor *, p2: yy_radio_mon_stats * (out, optional) */
+#define YY_RADIO_FN_MON_HOOK    "yyRadioMonHook"    /* p1: yy_radio_mon_fn (NULL = detach), p2: ctx */
+
+struct yy_radio_rxmeta {
+    uint8_t  channel;           /* IEEE channel number the frame was received on */
+    uint8_t  reserved[3];
+    int32_t  rssi_raw;          /* net80211 rxi_rssi as the HAL got it (units not yet verified) */
+    uint64_t tsf;               /* receive timestamp in us, 0 = not available yet */
+};
+
+typedef void (*yy_radio_mon_fn)(void *ctx, const uint8_t *frame, uint32_t len,
+                                const struct yy_radio_rxmeta *meta);
+
+struct yy_radio_monitor {
+    uint8_t  enable;            /* 1 = monitor mode on, 0 = back to station mode */
+    uint8_t  channel;           /* IEEE channel (AWDL social channels: 6, 44, 149) */
+    uint8_t  log_awdl;          /* 1 = log AWDL action frames in the kernel log */
+    uint8_t  reserved;
+};
+
+struct yy_radio_mon_stats {
+    uint32_t frames;            /* all frames seen in monitor mode */
+    uint32_t mgmt;              /* management frames */
+    uint32_t action;            /* action frames */
+    uint32_t awdl;              /* action frames of Apple's AWDL (OUI 00:17:F2, type 8) */
+    uint32_t awdl_psf;          /* AWDL periodic synchronization frames */
+    uint32_t awdl_mif;          /* AWDL master indication frames */
 };
 
 #endif /* mt7902_radio_h */

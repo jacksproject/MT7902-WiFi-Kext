@@ -48,24 +48,17 @@ extern "C" void mwx_yy_link_info(struct ieee80211com *ic, uint8_t *bss_bw, uint8
 #include <stdarg.h>
 #include <libkern/libkern.h>
 
-/* AWDL bridge telemetry & boot-arg gate status (ported from MtkWireless). */
+/* AWDL bridge boot-arg gate status (ported from MtkWireless). */
 static volatile uint32_t gYYMtkAwdlActive = 0;
-static volatile uint32_t gYYMtkAwdlTxCount = 0;
-static volatile uint32_t gYYMtkAwdlRxCount = 0;
 
 extern "C" void yy_mtk_awdl_set_active(uint32_t active)
 {
     __atomic_store_n(&gYYMtkAwdlActive, active, __ATOMIC_RELEASE);
 }
 
-extern "C" void yy_mtk_awdl_note_tx(uint32_t n)
+extern "C" uint32_t yy_mtk_awdl_is_active(void)
 {
-    __atomic_fetch_add(&gYYMtkAwdlTxCount, n, __ATOMIC_RELAXED);
-}
-
-extern "C" void yy_mtk_awdl_note_rx(uint32_t n)
-{
-    __atomic_fetch_add(&gYYMtkAwdlRxCount, n, __ATOMIC_RELAXED);
+    return __atomic_load_n(&gYYMtkAwdlActive, __ATOMIC_ACQUIRE);
 }
 
 static IOSimpleLock *gSmtwLock = NULL;

@@ -2624,6 +2624,13 @@ mwx_attach(struct device *parent, struct device *self, void *aux)
 	}
 	MWX_DEV_LOG(sc, "attach DMA resources ready\n");
 
+	/* AWDL staging gate: sync gMwxAwdlEnabled from mt7902_awdl boot-arg */
+	{
+		int awdl_arg = 0;
+		if (PE_parse_boot_argn("mt7902_awdl", &awdl_arg, sizeof(awdl_arg)) && awdl_arg != 0)
+			__atomic_store_n(&gMwxAwdlEnabled, 1, __ATOMIC_RELEASE);
+	}
+
 	/* regulatory domain: boot-arg mt7902-cc=XX, else '00' (0.7.1) */
 	{
 		char cc[4] = { 0 };

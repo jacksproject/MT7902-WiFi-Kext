@@ -9003,8 +9003,9 @@ mwx_dbg(uint32_t op, uint32_t a, uint32_t b, char *out, size_t outlen)
 		break;
 	}
 	case 42: {	/* MT7902 AWDL staging state */
-		snprintf(out, outlen, "awdl_en=%u infra_ps=%u chan_sw=%u",
-		    (unsigned)gMwxAwdlEnabled, (unsigned)gMwxAwdlInfraPs, (unsigned)gMwxAwdlChanSwitches);
+		snprintf(out, outlen, "awdl_en=%u infra_ps=%u chan_sw=%u hw7902=%d",
+		    (unsigned)gMwxAwdlEnabled, (unsigned)gMwxAwdlInfraPs, (unsigned)gMwxAwdlChanSwitches,
+		    (int)MWX_IS_7902(sc));
 		break;
 	}
 	case 41: {	/* MT7902: son 8 ieee80211_new_state istegi (kim, nerede, hangi duruma) */

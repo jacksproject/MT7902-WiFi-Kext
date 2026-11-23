@@ -166,6 +166,25 @@ static void yy_awdl_init_from_boot_args(void)
     }
 }
 
+
+/* AWDL interface & neighbor staging bridge (from awdl-port-staging / MtkWireless).
+ * Keeps full AirportMtkAwdlInterface / AwdlNeighbors bring-up gated behind
+ * gYYAwdlEnabled (mt7902_awdl=1 / -mt7902awdl) so primary Wi-Fi stays safe. */
+enum : uint32_t {
+    YY_AWDL_ST_DISABLED = 0,
+    YY_AWDL_ST_GATED_READY = 1,
+    YY_AWDL_ST_IFACE_PENDING = 2,
+    YY_AWDL_ST_IFACE_ACTIVE = 3
+};
+
+static void yy_awdl_stage_init(IOService *svc)
+{
+    uint32_t st = yy_awdl_is_enabled() ? YY_AWDL_ST_GATED_READY : YY_AWDL_ST_DISABLED;
+    __atomic_store_n(&gYYAwdlState, st, __ATOMIC_RELEASE);
+    if (svc != nullptr)
+        svc->setProperty("mt7902-awdl-stage", st == YY_AWDL_ST_GATED_READY ? "gated-ready" : "disabled");
+}
+
 static volatile bool gYYArmed;
 /* Chosen at arm time: 0 = legacy BSD interface (AirportItlwm scheme),
  * 1 = Skywalk netif datapath (research, BSD client). */
@@ -246,6 +265,7 @@ bool MT7902AirWiFiLayerPCI::start(IOService *provider)
     yy_trace_start(this);
     yy_trace("MT7902AirWiFiLayer 2a: PCI start\n");
     yy_awdl_init_from_boot_args();
+    yy_awdl_stage_init(this);
     if (gYYWorkQueue == nullptr)
         gYYWorkQueue = IO80211WorkQueue::workQueue();
     yy_trace("PCI: workQueue=%p\n", gYYWorkQueue);

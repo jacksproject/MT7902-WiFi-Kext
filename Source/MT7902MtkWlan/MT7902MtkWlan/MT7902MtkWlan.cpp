@@ -542,6 +542,7 @@ bool MT7902MtkWlan::start(IOService *provider)
         int awdl_boot = 0;
         if (PE_parse_boot_argn("mt7902_awdl", &awdl_boot, sizeof(awdl_boot)) && awdl_boot != 0)
             yy_mtk_awdl_set_active(1);
+        setProperty("mt7902-awdl-bridge", awdl_boot != 0 ? "staged" : "off");
     }
     smtw_trace("start entered\n"); smtw_publish();
     if (!gSmtwPubTc) {

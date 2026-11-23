@@ -2080,7 +2080,7 @@ mwx_rx(struct mwx_softc *sc, struct mbuf *m, struct mbuf_list *ml)
 		mwx_amsdu_flush(sc, ml);
 
 	wh = mtod(m, struct ieee80211_frame *);
-	if (__predict_false(ic->ic_opmode == IEEE80211_M_MONITOR))
+	if (ic->ic_opmode == IEEE80211_M_MONITOR)
 		mwx_yy_mon_tap(sc, m, &rxi);
 	if ((wh->i_fc[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_DATA) {
 		gRxData++;

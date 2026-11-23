@@ -1,4 +1,4 @@
-name: build-kext
+name: CI-MT7902-WiFi-Kext
 on:
   workflow_dispatch:
     inputs:

@@ -52,6 +52,7 @@
 #include <FwData.h>
 
 #include "if_mwxreg.h"
+#include "../mt7902_radio.h"	/* ABI 7 monitor-mode types (yy_radio_mon_fn, yy_radio_rxmeta) */
 
 OSDefineMetaClassAndStructors(MtkMwx, MtkHalService)
 
@@ -118,6 +119,18 @@ static volatile UInt32 gMwxPollFires;
 /* AWDL staging integration state for MT7902 (disabled unless boot-arg enabled). */
 static volatile uint32_t gMwxAwdlEnabled = 0;
 static volatile uint32_t gMwxAwdlChanSwitches = 0;
+
+/*
+ * ABI 7 monitor mode: raw 802.11 RX tap. gMwxMonFn is set/cleared on the
+ * command gate (yyRadioMonHook) and read on the RX path; ctx is written
+ * before fn and cleared after it.
+ */
+static yy_radio_mon_fn volatile gMwxMonFn = NULL;
+static void * volatile gMwxMonCtx = NULL;
+static volatile uint32_t gMwxMonLogAwdl = 0;
+static volatile uint32_t gMwxMonBootDone = 0;	/* mt7902-mon boot-arg applied once */
+static volatile uint32_t gMwxMonFrames, gMwxMonMgmt, gMwxMonAction;
+static volatile uint32_t gMwxMonAwdl, gMwxMonAwdlPsf, gMwxMonAwdlMif;
 
 static volatile int gMwxTrapMode = 1;
 /* R9T trace34: TX sayaclari (dbg 19/21) ve geri basinc (dbg 20) */
@@ -1852,6 +1865,64 @@ mwx_tx(struct mwx_softc *sc, struct mbuf *m, struct ieee80211_node *ni)
 	return rv;
 }
 
+/*
+ * ABI 7 monitor mode: look at one received frame before net80211 gets it
+ * (net80211 drops everything in monitor mode anyway). Counts management /
+ * action / AWDL frames, optionally logs AWDL ones and hands the raw frame to
+ * the attached hook. Must not block; does not keep or free the mbuf.
+ *
+ * AWDL action frame (Apple, OUI 00:17:F2): 802.11 mgmt header (24 bytes, +4
+ * with an HT control field), then category 127 (vendor specific), OUI (3),
+ * OUI type 8 (AWDL), version, subtype: 0 = PSF, 3 = MIF.
+ */
+static void
+mwx_mon_tap(struct mwx_softc *sc, struct mbuf *m, const struct ieee80211_rxinfo *rxi)
+{
+	const uint8_t *f = mtod(m, const uint8_t *);
+	uint32_t len = (uint32_t)mbuf_len(m);
+	uint8_t awdl_sub = 0xff;
+
+	if (len < 10)
+		return;
+	gMwxMonFrames++;
+	if ((f[0] & IEEE80211_FC0_TYPE_MASK) == IEEE80211_FC0_TYPE_MGT) {
+		uint8_t st = f[0] & IEEE80211_FC0_SUBTYPE_MASK;
+
+		gMwxMonMgmt++;
+		if (st == IEEE80211_FC0_SUBTYPE_ACTION || st == IEEE80211_FC0_SUBTYPE_ACTION_NOACK) {
+			uint32_t hl = 24 + ((f[1] & 0x80) ? 4 : 0);	/* order bit: HT control */
+
+			gMwxMonAction++;
+			if (len >= hl + 7) {
+				const uint8_t *p = f + hl;
+
+				if (p[0] == 127 && p[1] == 0x00 && p[2] == 0x17 && p[3] == 0xf2 && p[4] == 8) {
+					awdl_sub = p[6];
+					gMwxMonAwdl++;
+					if (awdl_sub == 0)
+						gMwxMonAwdlPsf++;
+					else if (awdl_sub == 3)
+						gMwxMonAwdlMif++;
+					if (gMwxMonLogAwdl && (gMwxMonAwdl <= 32 || (gMwxMonAwdl & 0xff) == 0))
+						MWX_DEV_LOG(sc, "AWDL mon #%u ch=%u rssi=%d sub=%u len=%u src=%s\n",
+						    (unsigned)gMwxMonAwdl, rxi->rxi_chan, rxi->rxi_rssi,
+						    awdl_sub, len, len >= 16 ? ether_sprintf((u_char *)(f + 10)) : "?");
+				}
+			}
+		}
+	}
+	yy_radio_mon_fn fn = gMwxMonFn;
+	if (fn != NULL) {
+		struct yy_radio_rxmeta meta;
+
+		memset(&meta, 0, sizeof(meta));
+		meta.channel = rxi->rxi_chan;
+		meta.rssi_raw = rxi->rxi_rssi;		/* dBm (negative) at this point, see mwx_rx_deliver */
+		meta.tsf = rxi->rxi_tstamp;		/* low 32 bits, 0 if the RXD gave none */
+		fn(gMwxMonCtx, f, len, &meta);
+	}
+}
+
 /* Hand one received MPDU to net80211. */
 static void
 mwx_rx_deliver(struct mwx_softc *sc, struct mbuf *m, struct ieee80211_rxinfo *rxi,
@@ -2054,6 +2125,9 @@ mwx_rx(struct mwx_softc *sc, struct mbuf *m, struct mbuf_list *ml)
 		}
 	}
 	sc->sc_rx_delivered++;
+
+	if (__predict_false(ic->ic_opmode == IEEE80211_M_MONITOR))
+		mwx_mon_tap(sc, m, &rxi);
 
 #if NBPFILTER > 0
 	if (__predict_false(sc->sc_drvbpf != NULL)) {
@@ -8124,6 +8198,23 @@ MtkMwx::enable(IONetworkInterface *interface)
 		    ifp->if_flags);
 		return kIOReturnSuccess;
 	}
+	/*
+	 * Boot-arg mt7902-mon=<channel> (e.g. 6, 44, 149): the first enable comes
+	 * up in monitor mode on that channel with AWDL frame logging, no Wi-Fi
+	 * layer needed. setMonitor(false) / yyRadioMonitor(enable=0) goes back to
+	 * station mode (applied once, so it does not come back).
+	 */
+	if (!__atomic_exchange_n(&gMwxMonBootDone, 1, __ATOMIC_ACQ_REL)) {
+		int mch = 0;
+
+		if (PE_parse_boot_argn("mt7902-mon", &mch, sizeof(mch)) && mch > 0 &&
+		    mch <= IEEE80211_CHAN_MAX && com->sc_ic.ic_channels[mch].ic_freq != 0) {
+			com->sc_ic.ic_opmode = IEEE80211_M_MONITOR;
+			com->sc_ic.ic_ibss_chan = &com->sc_ic.ic_channels[mch];
+			gMwxMonLogAwdl = 1;
+			MWX_DEV_LOG(com, "HAL enable: boot-arg mt7902-mon=%d, starting in monitor mode\n", mch);
+		}
+	}
 	ifp->if_flags |= IFF_UP;
 	int rv = mwx_init(ifp);
 	MWX_DEV_LOG(com, "HAL enable done mwx_init=%d flags=0x%x\n",
@@ -8231,6 +8322,93 @@ MtkMwx::setOwnAddress(const uint8_t *mac)
 	MWX_DEV_LOG(com, "own address now %s (mode %u, up %d) = 0x%x in %u ms, %u fw timeouts\n",
 	    ether_sprintf(ic->ic_myaddr), gYYMacUsed, up, r, gYYMacMs, gYYMacTo);
 	return r;
+}
+
+/*
+ * ABI 7: monitor mode. Switching the mode cycles the interface (disable ->
+ * ic_opmode -> enable), which makes mwx_init take its IEEE80211_M_MONITOR
+ * branch (sniffer on, beacon filter off, no RX filtering, state RUN). While
+ * already in monitor mode and running, only the channel is changed. Runs on
+ * the command gate.
+ */
+IOReturn
+MtkMwx::setMonitor(bool on, uint8_t channel, bool logAwdl)
+{
+	if (com == NULL)
+		return kIOReturnNotAttached;
+	struct ieee80211com *ic = &com->sc_ic;
+	struct ifnet *ifp = &ic->ic_if;
+	bool up = (ifp->if_flags & IFF_UP) != 0;
+	IOReturn r = kIOReturnSuccess;
+
+	if (on) {
+		if (channel == 0 || channel > IEEE80211_CHAN_MAX || ic->ic_channels[channel].ic_freq == 0)
+			return kIOReturnBadArgument;
+		struct ieee80211_channel *chan = &ic->ic_channels[channel];
+
+		gMwxMonLogAwdl = logAwdl ? 1 : 0;
+		if (ic->ic_opmode == IEEE80211_M_MONITOR && (ifp->if_flags & IFF_RUNNING)) {
+			/* channel change only */
+			ic->ic_ibss_chan = chan;
+			if (ic->ic_bss != NULL)
+				ic->ic_bss->ni_chan = chan;
+			int rv = mt7921_set_channel(com);
+			MWX_DEV_LOG(com, "monitor channel -> %u rv=%d\n", channel, rv);
+			return rv == 0 ? kIOReturnSuccess : kIOReturnError;
+		}
+		gMwxMonFrames = gMwxMonMgmt = gMwxMonAction = 0;
+		gMwxMonAwdl = gMwxMonAwdlPsf = gMwxMonAwdlMif = 0;
+		if (up)
+			disable(NULL);
+		ic->ic_opmode = IEEE80211_M_MONITOR;
+		ic->ic_ibss_chan = chan;
+		if (up)
+			r = enable(NULL);
+		MWX_DEV_LOG(com, "monitor mode on, channel %u, up=%d = 0x%x\n", channel, up, r);
+		return r;
+	}
+
+	if (ic->ic_opmode != IEEE80211_M_MONITOR)
+		return kIOReturnSuccess;
+	if (up)
+		disable(NULL);
+	ic->ic_opmode = IEEE80211_M_STA;
+	ic->ic_ibss_chan = &ic->ic_channels[1];		/* as set at attach */
+	if (up)
+		r = enable(NULL);
+	MWX_DEV_LOG(com, "monitor mode off, station mode again, up=%d = 0x%x\n", up, r);
+	return r;
+}
+
+bool
+MtkMwx::isMonitor()
+{
+	return com != NULL && com->sc_ic.ic_opmode == IEEE80211_M_MONITOR;
+}
+
+void
+MtkMwx::setMonHook(void *fn, void *ctx)
+{
+	if (fn == NULL) {
+		gMwxMonFn = NULL;
+		gMwxMonCtx = NULL;
+	} else {
+		gMwxMonCtx = ctx;
+		gMwxMonFn = (yy_radio_mon_fn)fn;
+	}
+}
+
+void
+MtkMwx::getMonStats(uint32_t *out6)
+{
+	if (out6 == NULL)
+		return;
+	out6[0] = gMwxMonFrames;
+	out6[1] = gMwxMonMgmt;
+	out6[2] = gMwxMonAction;
+	out6[3] = gMwxMonAwdl;
+	out6[4] = gMwxMonAwdlPsf;
+	out6[5] = gMwxMonAwdlMif;
 }
 
 struct ieee80211com *
@@ -8995,9 +9173,11 @@ mwx_dbg(uint32_t op, uint32_t a, uint32_t b, char *out, size_t outlen)
 		break;
 	}
 	case 42: {	/* MT7902 AWDL staging state */
-		snprintf(out, outlen, "awdl_en=%u chan_sw=%u hw7902=%d",
+		snprintf(out, outlen, "awdl_en=%u chan_sw=%u hw7902=%d mon=%d mon_frames=%u mgmt=%u action=%u awdl=%u psf=%u mif=%u",
 		    (unsigned)gMwxAwdlEnabled, (unsigned)gMwxAwdlChanSwitches,
-		    (int)MWX_IS_7902(sc));
+		    (int)MWX_IS_7902(sc), (int)(sc->sc_ic.ic_opmode == IEEE80211_M_MONITOR),
+		    (unsigned)gMwxMonFrames, (unsigned)gMwxMonMgmt, (unsigned)gMwxMonAction,
+		    (unsigned)gMwxMonAwdl, (unsigned)gMwxMonAwdlPsf, (unsigned)gMwxMonAwdlMif);
 		break;
 	}
 	case 41: {	/* MT7902: son 8 ieee80211_new_state istegi (kim, nerede, hangi duruma) */

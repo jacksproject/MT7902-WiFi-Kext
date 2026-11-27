@@ -1115,7 +1115,8 @@ void MT7902MtkWlan::associatePMK(const uint8_t *ssid, uint8_t ssid_len, const ui
 #include "mt7902_radio.h"
 
 enum { YY_RF_NONE, YY_RF_ABI, YY_RF_SCAN_START, YY_RF_SCAN_COPY, YY_RF_CHANNELS, YY_RF_JOIN, YY_RF_STATUS, YY_RF_LEAVE,
-       YY_RF_MAC, YY_RF_DATA_HOOK, YY_RF_TX, YY_RF_SET_MAC, YY_RF_POWER, YY_RF_HW_MAC };
+       YY_RF_MAC, YY_RF_DATA_HOOK, YY_RF_TX, YY_RF_SET_MAC, YY_RF_POWER, YY_RF_HW_MAC,
+       YY_RF_MONITOR, YY_RF_MON_HOOK };
 struct yy_radio_gate_args { int fn; void *p1, *p2; };
 
 static IOReturn yy_radio_gate_body(OSObject *owner, void *a0);
@@ -1150,6 +1151,11 @@ static IOReturn yy_radio_gate_body(OSObject *owner, void *a0)
 
     switch (a->fn) {
     case YY_RF_SCAN_START: {
+        {   /* no station scanning while sniffing */
+            MtkMwx *mh = OSDynamicCast(MtkMwx, that->fHalService);
+            if (mh != NULL && mh->isMonitor())
+                return kIOReturnBusy;
+        }
         if (a->p1)
             *(uint32_t *)a->p1 = ic->ic_state;
         /* Associated: background scan. Otherwise net80211 is already
@@ -1214,6 +1220,11 @@ static IOReturn yy_radio_gate_body(OSObject *owner, void *a0)
     }
     case YY_RF_JOIN: {
         const struct yy_radio_join *j = (const struct yy_radio_join *)a->p1;
+        {   /* no station join while sniffing */
+            MtkMwx *mh = OSDynamicCast(MtkMwx, that->fHalService);
+            if (mh != NULL && mh->isMonitor())
+                return kIOReturnBusy;
+        }
         if (j == NULL || j->ssid_len == 0 || j->ssid_len > 32)
             return kIOReturnBadArgument;
         that->associatePMK(j->ssid, j->ssid_len, j->has_pmk ? j->pmk : NULL);
@@ -1319,6 +1330,43 @@ static IOReturn yy_radio_gate_body(OSObject *owner, void *a0)
         XYLog("MT7902: radio power on = 0x%x\n", r);
         return r;
     }
+    case YY_RF_MONITOR: {
+        /* ABI 7: p1 = const yy_radio_monitor * (NULL = only read the stats),
+         * p2 = yy_radio_mon_stats * (out, optional) */
+        MtkMwx *hal = OSDynamicCast(MtkMwx, that->fHalService);
+        if (hal == NULL)
+            return kIOReturnUnsupported;
+        IOReturn r = kIOReturnSuccess;
+        const struct yy_radio_monitor *mon = (const struct yy_radio_monitor *)a->p1;
+        if (mon != NULL) {
+            r = hal->setMonitor(mon->enable != 0, mon->channel, mon->log_awdl != 0);
+            if (r == kIOReturnSuccess) {
+                if (mon->enable) {
+                    /* the station link is down while sniffing */
+                    that->IOEthernetController::setLinkStatus(kIONetworkLinkValid, NULL, 0, NULL);
+                    XYLog("MT7902: monitor mode on, channel %u\n", mon->channel);
+                } else {
+                    XYLog("MT7902: monitor mode off\n");
+                }
+            }
+        }
+        if (a->p2 != NULL) {
+            uint32_t st[6];
+            struct yy_radio_mon_stats *o = (struct yy_radio_mon_stats *)a->p2;
+            hal->getMonStats(st);
+            o->frames = st[0]; o->mgmt = st[1]; o->action = st[2];
+            o->awdl = st[3]; o->awdl_psf = st[4]; o->awdl_mif = st[5];
+        }
+        return r;
+    }
+    case YY_RF_MON_HOOK: {
+        MtkMwx *hal = OSDynamicCast(MtkMwx, that->fHalService);
+        if (hal == NULL)
+            return kIOReturnUnsupported;
+        hal->setMonHook(a->p1, a->p2);
+        XYLog("MT7902: monitor hook %s\n", a->p1 != NULL ? "attached" : "detached");
+        return kIOReturnSuccess;
+    }
     case YY_RF_DATA_HOOK: {
         /* On the gate, so _if_input (also gated) never sees a half-set hook. */
         yy_rx_hook_ctx = a->p2;
@@ -1378,6 +1426,10 @@ IOReturn MT7902MtkWlan::callPlatformFunction(const OSSymbol *functionName, bool 
             fn = YY_RF_POWER;
         else if (functionName->isEqualTo(YY_RADIO_FN_HW_MAC))
             fn = YY_RF_HW_MAC;
+        else if (functionName->isEqualTo(YY_RADIO_FN_MONITOR))
+            fn = YY_RF_MONITOR;
+        else if (functionName->isEqualTo(YY_RADIO_FN_MON_HOOK))
+            fn = YY_RF_MON_HOOK;
     }
     if (fn == YY_RF_NONE)
         return super::callPlatformFunction(functionName, waitForFunction, param1, param2, param3, param4);

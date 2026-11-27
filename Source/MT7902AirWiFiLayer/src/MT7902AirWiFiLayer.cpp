@@ -225,6 +225,238 @@ extern "C" void yy_awdl_ctrl_record_creation(void *ctrl, const char *stage, int 
 
 static volatile uint32_t gYYAwdlIfaceStageActive = 0;
 
+/* ------------------------------------------------ AWDL monitor bridge -- */
+/*
+ * AWDL milestone 2a: layer side of the radio's monitor-mode RX tap (ABI 7).
+ * Gated by mt7902_awdl=1 (like the rest of the AWDL staging). It
+ *   - attaches yyRadioMonHook; the hook keeps counters and the last few AWDL
+ *     frames (first 96 bytes) in a small ring, under a spin lock, no allocation;
+ *   - optionally puts the radio in monitor mode: boot-arg mt7902-awdl-mon=<ch>
+ *     (6, 44, 149). The station link is down meanwhile (Wi-Fi unusable);
+ *   - optionally hops the social channels: boot-arg mt7902-awdl-hop=<ms>
+ *     (e.g. 1000) cycles 6 -> 44 -> 149, skipping channels the radio refuses;
+ *   - publishes counters and the last frames every 2 s (every hop period when
+ *     hopping) as IORegistry
+ *     properties on the controller:
+ *       ioreg -l -w0 | grep -E "mt7902-awdl-(mon|frames)"
+ * It does not create awdl0 and does not transmit.
+ */
+#define YY_AWDL_RING        8
+#define YY_AWDL_SNAP        96
+
+struct yy_awdl_snap {
+    uint8_t  len;                   /* bytes kept in data[] */
+    uint8_t  channel;
+    uint8_t  subtype;               /* AWDL subtype: 0 = PSF, 3 = MIF, ... */
+    uint8_t  reserved;
+    int32_t  rssi;
+    uint32_t tsf;
+    uint32_t frame_len;             /* full frame length */
+    uint8_t  data[YY_AWDL_SNAP];
+};
+
+static IOSimpleLock *gYYMonLock;
+static struct yy_awdl_snap gYYMonRing[YY_AWDL_RING];
+static uint32_t gYYMonRingN;                        /* total AWDL frames stored */
+static volatile uint32_t gYYMonFrames, gYYMonMgmt, gYYMonAction;
+static volatile uint32_t gYYMonAwdl, gYYMonPsf, gYYMonMif;
+static volatile int gYYMonChannel;                  /* 0 = not in monitor mode */
+static volatile bool gYYMonHookOn;
+static uint32_t gYYMonHopMs;
+static uint32_t gYYMonHopIdx;
+static uint32_t gYYMonTick;
+static IOTimerEventSource *gYYMonTimer;
+static volatile int gYYMonStopping;
+
+/* Runs on the radio's RX path: must not block, call back into the radio or keep f. */
+static void yy_awdl_mon_hook(void *ctx, const uint8_t *f, uint32_t len, const struct yy_radio_rxmeta *meta)
+{
+    (void)ctx;
+    if (f == nullptr || len < 10)
+        return;
+    gYYMonFrames++;
+    if ((f[0] & 0x0c) != 0x00)                      /* not a management frame */
+        return;
+    gYYMonMgmt++;
+    uint8_t st = f[0] & 0xf0;
+    if (st != 0xd0 && st != 0xe0)                   /* action / action no-ack */
+        return;
+    gYYMonAction++;
+    uint32_t hl = 24 + ((f[1] & 0x80) ? 4 : 0);     /* order bit: HT control */
+    if (len < hl + 7)
+        return;
+    const uint8_t *p = f + hl;
+    /* category 127 (vendor), Apple OUI 00:17:F2, OUI type 8 (AWDL), version, subtype */
+    if (p[0] != 127 || p[1] != 0x00 || p[2] != 0x17 || p[3] != 0xf2 || p[4] != 8)
+        return;
+    uint8_t sub = p[6];
+    gYYMonAwdl++;
+    if (sub == 0)
+        gYYMonPsf++;
+    else if (sub == 3)
+        gYYMonMif++;
+    if (gYYMonLock == nullptr)
+        return;
+    IOSimpleLockLock(gYYMonLock);
+    struct yy_awdl_snap *e = &gYYMonRing[gYYMonRingN % YY_AWDL_RING];
+    gYYMonRingN++;
+    e->len = (uint8_t)(len < YY_AWDL_SNAP ? len : YY_AWDL_SNAP);
+    e->channel = meta != nullptr ? meta->channel : 0;
+    e->subtype = sub;
+    e->rssi = meta != nullptr ? meta->rssi_raw : 0;
+    e->tsf = meta != nullptr ? (uint32_t)meta->tsf : 0;
+    e->frame_len = len;
+    memcpy(e->data, f, e->len);
+    IOSimpleLockUnlock(gYYMonLock);
+}
+
+static void yy_awdl_mon_publish(MT7902AirWiFiLayer *c)
+{
+    OSDictionary *d = OSDictionary::withCapacity(8);
+    if (d == nullptr)
+        return;
+    struct { const char *k; uint32_t v; } kv[] = {
+        { "frames", gYYMonFrames }, { "mgmt", gYYMonMgmt }, { "action", gYYMonAction },
+        { "awdl", gYYMonAwdl }, { "psf", gYYMonPsf }, { "mif", gYYMonMif },
+        { "channel", (uint32_t)gYYMonChannel },
+    };
+    for (unsigned i = 0; i < sizeof(kv) / sizeof(kv[0]); i++) {
+        OSNumber *n = OSNumber::withNumber(kv[i].v, 32);
+        if (n != nullptr) {
+            d->setObject(kv[i].k, n);
+            n->release();
+        }
+    }
+    c->setProperty("mt7902-awdl-mon", d);
+    d->release();
+
+    /* last frames, newest last: each one "ch=.. rssi=.. sub=.. len=.. tsf=.." + raw bytes */
+    OSArray *arr = OSArray::withCapacity(YY_AWDL_RING);
+    if (arr == nullptr || gYYMonLock == nullptr) {
+        OSSafeReleaseNULL(arr);
+        return;
+    }
+    struct yy_awdl_snap tmp[YY_AWDL_RING];
+    uint32_t n;
+    IOSimpleLockLock(gYYMonLock);
+    n = gYYMonRingN < YY_AWDL_RING ? gYYMonRingN : YY_AWDL_RING;
+    for (uint32_t i = 0; i < n; i++)
+        tmp[i] = gYYMonRing[(gYYMonRingN - n + i) % YY_AWDL_RING];
+    IOSimpleLockUnlock(gYYMonLock);
+    for (uint32_t i = 0; i < n; i++) {
+        OSDictionary *fd = OSDictionary::withCapacity(6);
+        if (fd == nullptr)
+            continue;
+        OSNumber *a = OSNumber::withNumber(tmp[i].channel, 32);
+        OSNumber *b = OSNumber::withNumber((uint32_t)tmp[i].rssi, 32);
+        OSNumber *e = OSNumber::withNumber(tmp[i].subtype, 32);
+        OSNumber *g = OSNumber::withNumber(tmp[i].frame_len, 32);
+        OSNumber *t = OSNumber::withNumber(tmp[i].tsf, 32);
+        OSData *raw = OSData::withBytes(tmp[i].data, tmp[i].len);
+        if (a) { fd->setObject("channel", a); a->release(); }
+        if (b) { fd->setObject("rssi", b); b->release(); }     /* int32 as unsigned: dBm is negative */
+        if (e) { fd->setObject("subtype", e); e->release(); }
+        if (g) { fd->setObject("frame-len", g); g->release(); }
+        if (t) { fd->setObject("tsf", t); t->release(); }
+        if (raw) { fd->setObject("data", raw); raw->release(); }
+        arr->setObject(fd);
+        fd->release();
+    }
+    c->setProperty("mt7902-awdl-frames", arr);
+    arr->release();
+}
+
+static void yy_awdl_mon_timer_action(OSObject *owner, IOTimerEventSource *t)
+{
+    MT7902AirWiFiLayer *c = OSDynamicCast(MT7902AirWiFiLayer, owner);
+    if (c == nullptr || t == nullptr || gYYMonStopping)
+        return;
+    gYYMonTick++;
+    if (gYYMonHopMs != 0 && gYYMonChannel != 0) {
+        static const uint8_t social[3] = { 6, 44, 149 };
+        IOService *r = c->radio();
+        if (r != nullptr) {
+            for (int tries = 0; tries < 3; tries++) {
+                struct yy_radio_monitor m = { 1, social[gYYMonHopIdx++ % 3], 0, 0 };
+                if (r->callPlatformFunction(YY_RADIO_FN_MONITOR, false, &m, nullptr, nullptr, nullptr) == kIOReturnSuccess) {
+                    gYYMonChannel = m.channel;
+                    break;              /* channels the radio refuses (regulatory) are skipped */
+                }
+            }
+        }
+    }
+    yy_awdl_mon_publish(c);
+    t->setTimeoutMS(gYYMonHopMs != 0 ? gYYMonHopMs : 2000);
+}
+
+static void yy_awdl_mon_start(MT7902AirWiFiLayer *ctrl)
+{
+    IOService *r = ctrl->radio();
+    uint32_t abi = 0;
+    if (r == nullptr || r->callPlatformFunction(YY_RADIO_FN_ABI, false, &abi, nullptr, nullptr, nullptr) != kIOReturnSuccess ||
+        abi < 7) {
+        yy_trace("AWDL-MON: radio missing or ABI < 7 (abi=%u)\n", abi);
+        ctrl->setProperty("mt7902-awdl-mon-state", "radio ABI < 7");
+        return;
+    }
+    if (gYYMonLock == nullptr)
+        gYYMonLock = IOSimpleLockAlloc();
+    if (gYYMonLock == nullptr)
+        return;
+    gYYMonStopping = 0;
+    IOReturn hr = r->callPlatformFunction(YY_RADIO_FN_MON_HOOK, false, (void *)yy_awdl_mon_hook, ctrl, nullptr, nullptr);
+    gYYMonHookOn = (hr == kIOReturnSuccess);
+    yy_trace("AWDL-MON: hook attach = 0x%x\n", hr);
+
+    int ch = 0, hop = 0;
+    if (PE_parse_boot_argn("mt7902-awdl-hop", &hop, sizeof(hop)) && hop >= 100)
+        gYYMonHopMs = (uint32_t)hop;
+    PE_parse_boot_argn("mt7902-awdl-mon", &ch, sizeof(ch));
+    if (ch <= 0 && gYYMonHopMs != 0)
+        ch = 6;                         /* hopping implies monitor mode, start on 6 */
+    if (gYYMonHookOn && ch > 0 && ch < 256) {
+        struct yy_radio_monitor m = { 1, (uint8_t)ch, 1, 0 };
+        IOReturn mr = r->callPlatformFunction(YY_RADIO_FN_MONITOR, false, &m, nullptr, nullptr, nullptr);
+        yy_trace("AWDL-MON: monitor mode ch=%d hop=%ums = 0x%x\n", ch, gYYMonHopMs, mr);
+        if (mr == kIOReturnSuccess)
+            gYYMonChannel = ch;
+        else
+            gYYMonHopMs = 0;
+    }
+    ctrl->setProperty("mt7902-awdl-mon-state", gYYMonHookOn ? (gYYMonChannel ? "monitoring" : "hook attached (not in monitor mode)")
+                                                            : "hook attach failed");
+    if (gYYMonTimer == nullptr) {
+        gYYMonTimer = IOTimerEventSource::timerEventSource(ctrl, yy_awdl_mon_timer_action);
+        if (gYYMonTimer == nullptr || ((IOWorkLoop *)gYYWorkQueue)->addEventSource(gYYMonTimer) != kIOReturnSuccess) {
+            yy_trace("AWDL-MON: timer FAILED\n");
+            OSSafeReleaseNULL(gYYMonTimer);
+            return;
+        }
+    }
+    gYYMonTimer->setTimeoutMS(gYYMonHopMs != 0 ? gYYMonHopMs : 2000);
+}
+
+static void yy_awdl_mon_stop(MT7902AirWiFiLayer *ctrl)
+{
+    gYYMonStopping = 1;
+    if (gYYMonTimer != nullptr) {
+        gYYMonTimer->cancelTimeout();
+        ((IOWorkLoop *)gYYWorkQueue)->removeEventSource(gYYMonTimer);
+        OSSafeReleaseNULL(gYYMonTimer);
+    }
+    IOService *r = ctrl != nullptr ? ctrl->radio() : nullptr;
+    if (r != nullptr && gYYMonHookOn)
+        r->callPlatformFunction(YY_RADIO_FN_MON_HOOK, false, nullptr, nullptr, nullptr, nullptr);
+    if (r != nullptr && gYYMonChannel != 0) {
+        struct yy_radio_monitor m = { 0, 0, 0, 0 };     /* back to station mode */
+        r->callPlatformFunction(YY_RADIO_FN_MONITOR, false, &m, nullptr, nullptr, nullptr);
+    }
+    gYYMonHookOn = false;
+    gYYMonChannel = 0;
+    gYYMonHopMs = 0;
+}
+
+
 static void yy_awdl_iface_start(MT7902AirWiFiLayer *ctrl, IOService *provider, const ether_addr *mac)
 {
     (void)provider;
@@ -246,12 +478,14 @@ static void yy_awdl_iface_start(MT7902AirWiFiLayer *ctrl, IOService *provider, c
     __atomic_store_n(&gYYAwdlState, YY_AWDL_ST_GATED_READY, __ATOMIC_RELEASE);
     ctrl->setProperty("mt7902-awdl-stage", "gated-ready");
     yy_awdl_ctrl_record_creation(ctrl, "gated-ready", kIOReturnSuccess);
+    yy_awdl_mon_start(ctrl);
 }
 
 static void yy_awdl_iface_stop(MT7902AirWiFiLayer *ctrl)
 {
     if (__atomic_exchange_n(&gYYAwdlIfaceStageActive, 0u, __ATOMIC_ACQ_REL) == 0)
         return;
+    yy_awdl_mon_stop(ctrl);
     if (ctrl != nullptr && yy_awdl_is_enabled())
         ctrl->setProperty("mt7902-awdl-stage", "stopped");
 }

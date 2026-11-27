@@ -1171,6 +1171,10 @@ static IOReturn yy_radio_gate_body(OSObject *owner, void *a0)
             return kIOReturnBadArgument;
         uint32_t cap = *count, n = 0;
         struct ieee80211_node *ni;
+        if (ic->ic_opmode == IEEE80211_M_MONITOR) {     /* stale node table: no scan results while sniffing */
+            *count = 0;
+            return kIOReturnSuccess;
+        }
         RB_FOREACH(ni, ieee80211_tree, &ic->ic_tree) {
             if (n >= cap)
                 break;
@@ -1235,10 +1239,17 @@ static IOReturn yy_radio_gate_body(OSObject *owner, void *a0)
         if (st == NULL)
             return kIOReturnBadArgument;
         bzero(st, sizeof(*st));
-        st->state = ic->ic_state;
+        /*
+         * Monitor mode: net80211 runs the sniffer in state RUN with a dummy
+         * BSS. Reporting that would make the layer's join/link watcher think
+         * it is associated (fake link up, then flapping), so report INIT:
+         * not associated, no BSS.
+         */
+        const bool mon = ic->ic_opmode == IEEE80211_M_MONITOR;
+        st->state = mon ? (uint32_t)YY_RADIO_S_INIT : (uint32_t)ic->ic_state;
         st->rsn = (ic->ic_flags & IEEE80211_F_RSNON) ? 1 : 0;
         struct ieee80211_node *ni = ic->ic_bss;
-        if (ni != NULL && ic->ic_state >= IEEE80211_S_AUTH) {
+        if (!mon && ni != NULL && ic->ic_state >= IEEE80211_S_AUTH) {
             memcpy(st->bssid, ni->ni_bssid, 6);
             st->ssid_len = ni->ni_esslen > 32 ? 32 : ni->ni_esslen;
             memcpy(st->ssid, ni->ni_essid, st->ssid_len);
@@ -1444,6 +1455,13 @@ IOReturn MT7902MtkWlan::callPlatformFunction(const OSSymbol *functionName, bool 
          * the layer calling in from its work queue cannot deadlock. */
         if (param1 == NULL)
             return kIOReturnBadArgument;
+        {   /* no station TX while sniffing: consume the frame (as the ABI says) */
+            MtkMwx *mh = OSDynamicCast(MtkMwx, fHalService);
+            if (mh != NULL && mh->isMonitor()) {
+                mbuf_freem((mbuf_t)param1);
+                return kIOReturnOutputDropped;
+            }
+        }
         return outputPacket((mbuf_t)param1, NULL) == kIOReturnOutputSuccess ? kIOReturnSuccess : kIOReturnOutputDropped;
     }
     if (_fCommandGate == NULL)

@@ -1350,9 +1350,14 @@ static IOReturn yy_radio_gate_body(OSObject *owner, void *a0)
         IOReturn r = kIOReturnSuccess;
         const struct yy_radio_monitor *mon = (const struct yy_radio_monitor *)a->p1;
         if (mon != NULL) {
-            r = hal->setMonitor(mon->enable != 0, mon->channel, mon->log_awdl != 0);
+            if (mon->enable == 2)       /* passive: stay associated, home channel only */
+                r = hal->setMonitorPassive(true, mon->log_awdl != 0);
+            else
+                r = hal->setMonitor(mon->enable != 0, mon->channel, mon->log_awdl != 0);
             if (r == kIOReturnSuccess) {
-                if (mon->enable) {
+                if (mon->enable == 2) {
+                    XYLog("MT7902: passive monitor on (associated, home channel)\n");
+                } else if (mon->enable) {
                     /* the station link is down while sniffing */
                     that->IOEthernetController::setLinkStatus(kIONetworkLinkValid, NULL, 0, NULL);
                     XYLog("MT7902: monitor mode on, channel %u\n", mon->channel);

@@ -122,6 +122,13 @@ struct yy_radio_status {
  * the channel). Entering monitor mode drops any association: the station
  * link is down until it is called again with enable = 0.
  *
+ * Passive mode (enable = 2): the radio stays in station mode and associated;
+ * it only relaxes its RX filter (other-BSS / other-unicast frames are passed
+ * up) so the tap also sees frames of other networks. Only the channel the
+ * station is on is heard (the channel field is ignored: no hopping). enable = 0
+ * ends it as well. Whether the firmware passes everything AWDL needs on that
+ * channel is untested.
+ *
  * yyRadioMonHook attaches a receiver for every frame the radio sniffs in
  * monitor mode: the raw 802.11 frame starting at the MAC header (no radiotap,
  * no FCS). The hook runs on the radio's RX path: it must not block, must not
@@ -141,7 +148,7 @@ typedef void (*yy_radio_mon_fn)(void *ctx, const uint8_t *frame, uint32_t len,
                                 const struct yy_radio_rxmeta *meta);
 
 struct yy_radio_monitor {
-    uint8_t  enable;            /* 1 = monitor mode on, 0 = back to station mode */
+    uint8_t  enable;            /* 1 = monitor mode on, 2 = passive (stay associated), 0 = off / station mode */
     uint8_t  channel;           /* IEEE channel (AWDL social channels: 6, 44, 149) */
     uint8_t  log_awdl;          /* 1 = log AWDL action frames in the kernel log */
     uint8_t  reserved;

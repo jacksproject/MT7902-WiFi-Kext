@@ -56,6 +56,7 @@ Add your regulatory country code in `config.plist -> NVRAM -> Add -> 7C436110-AB
 | `mt7902-mon=CH` | Experimental (AWDL research): the radio's first enable starts in monitor mode on channel `CH` (AWDL social channels: 6, 44, 149) and logs AWDL frames. Wi-Fi is unusable while monitoring. |
 | `mt7902_awdl=1` | Experimental: enables the AWDL staging code in the native layer (attaches the radio's monitor hook and publishes AWDL counters/frames to IORegistry). Does not create `awdl0` yet. |
 | `mt7902-awdl-mon=CH` | With `mt7902_awdl=1`: put the radio in monitor mode on channel `CH` through the radio ABI. |
+| `mt7902-awdl-passive=1` | With `mt7902_awdl=1`: sniff AWDL frames while Wi-Fi stays connected. Only the channel you are associated on is heard (no hopping). Untested. |
 | `mt7902-awdl-hop=MS` | With `mt7902_awdl=1`: hop the AWDL social channels 6 -> 44 -> 149 every `MS` ms (100 or more). Implies monitor mode. |
 
 > **Automatic Crash Guard:** If macOS encounters an issue while initializing the native Wi-Fi layer, the NVRAM guard (`mt7902-arm-guard`) automatically skips starting the native layer on the next boot so you can recover safely.

@@ -233,6 +233,8 @@ static volatile uint32_t gYYAwdlIfaceStageActive = 0;
  *     frames (first 96 bytes) in a small ring, under a spin lock, no allocation;
  *   - optionally puts the radio in monitor mode: boot-arg mt7902-awdl-mon=<ch>
  *     (6, 44, 149). The station link is down meanwhile (Wi-Fi unusable);
+ *   - boot-arg mt7902-awdl-passive=1 instead sniffs while the station stays
+ *     associated (home channel only, no hopping, Wi-Fi keeps working);
  *   - optionally hops the social channels: boot-arg mt7902-awdl-hop=<ms>
  *     (e.g. 1000) cycles 6 -> 44 -> 149, skipping channels the radio refuses;
  *   - publishes counters and the last frames every 2 s (every hop period when
@@ -261,6 +263,7 @@ static uint32_t gYYMonRingN;                        /* total AWDL frames stored 
 static volatile uint32_t gYYMonFrames, gYYMonMgmt, gYYMonAction;
 static volatile uint32_t gYYMonAwdl, gYYMonPsf, gYYMonMif;
 static volatile int gYYMonChannel;                  /* 0 = not in monitor mode */
+static volatile bool gYYMonPassive;                 /* passive mode: associated, home channel */
 static volatile bool gYYMonHookOn;
 static uint32_t gYYMonHopMs;
 static uint32_t gYYMonHopIdx;
@@ -406,10 +409,17 @@ static void yy_awdl_mon_start(MT7902AirWiFiLayer *ctrl)
     gYYMonHookOn = (hr == kIOReturnSuccess);
     yy_trace("AWDL-MON: hook attach = 0x%x\n", hr);
 
-    int ch = 0, hop = 0;
-    if (PE_parse_boot_argn("mt7902-awdl-hop", &hop, sizeof(hop)) && hop >= 100)
+    int ch = 0, hop = 0, passive = 0;
+    if (PE_parse_boot_argn("mt7902-awdl-passive", &passive, sizeof(passive)) && passive != 0 && gYYMonHookOn) {
+        /* Wi-Fi stays up; no monitor mode, no hopping (it would break the link) */
+        struct yy_radio_monitor m = { 2, 0, 1, 0 };
+        IOReturn pr = r->callPlatformFunction(YY_RADIO_FN_MONITOR, false, &m, nullptr, nullptr, nullptr);
+        yy_trace("AWDL-MON: passive monitor = 0x%x\n", pr);
+        gYYMonPassive = (pr == kIOReturnSuccess);
+    } else if (PE_parse_boot_argn("mt7902-awdl-hop", &hop, sizeof(hop)) && hop >= 100)
         gYYMonHopMs = (uint32_t)hop;
-    PE_parse_boot_argn("mt7902-awdl-mon", &ch, sizeof(ch));
+    if (!gYYMonPassive)
+        PE_parse_boot_argn("mt7902-awdl-mon", &ch, sizeof(ch));
     if (ch <= 0 && gYYMonHopMs != 0)
         ch = 6;                         /* hopping implies monitor mode, start on 6 */
     if (gYYMonHookOn && ch > 0 && ch < 256) {
@@ -421,7 +431,8 @@ static void yy_awdl_mon_start(MT7902AirWiFiLayer *ctrl)
         else
             gYYMonHopMs = 0;
     }
-    ctrl->setProperty("mt7902-awdl-mon-state", gYYMonHookOn ? (gYYMonChannel ? "monitoring" : "hook attached (not in monitor mode)")
+    ctrl->setProperty("mt7902-awdl-mon-state", gYYMonHookOn ? (gYYMonPassive ? "passive (associated, home channel only)"
+                                                              : gYYMonChannel ? "monitoring" : "hook attached (not in monitor mode)")
                                                             : "hook attach failed");
     if (gYYMonTimer == nullptr) {
         gYYMonTimer = IOTimerEventSource::timerEventSource(ctrl, yy_awdl_mon_timer_action);
@@ -446,11 +457,12 @@ static void yy_awdl_mon_stop(MT7902AirWiFiLayer *ctrl)
     bool detached = false;
     if (r != nullptr && gYYMonHookOn)
         detached = r->callPlatformFunction(YY_RADIO_FN_MON_HOOK, false, nullptr, nullptr, nullptr, nullptr) == kIOReturnSuccess;
-    if (r != nullptr && gYYMonChannel != 0) {
+    if (r != nullptr && (gYYMonChannel != 0 || gYYMonPassive)) {
         struct yy_radio_monitor m = { 0, 0, 0, 0 };     /* back to station mode */
         r->callPlatformFunction(YY_RADIO_FN_MONITOR, false, &m, nullptr, nullptr, nullptr);
     }
     gYYMonHookOn = false;
+    gYYMonPassive = false;
     gYYMonChannel = 0;
     gYYMonHopMs = 0;
     /* the gated detach means the hook cannot run any more: free the lock then */

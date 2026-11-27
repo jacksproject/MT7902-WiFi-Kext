@@ -65,6 +65,7 @@ public:
     void mwxStartPoll(struct mwx_softc *sc);
     IOReturn setOwnAddress(const uint8_t *mac);   /* MT7902 radio bridge */
     IOReturn setMonitor(bool on, uint8_t channel, bool logAwdl);   /* ABI 7: monitor mode + channel */
+    IOReturn setMonitorPassive(bool on, bool logAwdl);             /* ABI 7: sniff while associated (home channel) */
     bool isMonitor();                                              /* ABI 7: radio is in monitor mode */
     void setMonHook(void *fn, void *ctx);                          /* ABI 7: yy_radio_mon_fn (NULL = detach) */
     void getMonStats(uint32_t *out6);                              /* ABI 7: frames, mgmt, action, awdl, psf, mif */

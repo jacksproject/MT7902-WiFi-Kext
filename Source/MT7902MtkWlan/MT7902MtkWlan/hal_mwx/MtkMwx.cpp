@@ -128,6 +128,11 @@ static volatile uint32_t gMwxAwdlChanSwitches = 0;
 static yy_radio_mon_fn volatile gMwxMonFn = NULL;
 static void * volatile gMwxMonCtx = NULL;
 static volatile uint32_t gMwxMonLogAwdl = 0;
+static volatile uint32_t gMwxMonPassive = 0;	/* sniff while associated (yyRadioMonitor enable = 2) */
+static uint32_t gMwxRfcrSaved;			/* RX filter bits cleared by passive mode */
+/* RX filter drop bits relaxed in passive mode: frames of other BSSes / for others */
+#define MWX_RFCR_PASSIVE_MASK	(MT_WF_RFCR_DROP_OTHER_UC | MT_WF_RFCR_DROP_OTHER_BSS | \
+				 MT_WF_RFCR_DROP_A3_BSSID | MT_WF_RFCR_DROP_A3_MAC | MT_WF_RFCR_DROP_A2_BSSID)
 static volatile uint32_t gMwxMonBootDone = 0;	/* mt7902-mon boot-arg applied once */
 static volatile uint32_t gMwxMonFrames, gMwxMonMgmt, gMwxMonAction;
 static volatile uint32_t gMwxMonAwdl, gMwxMonAwdlPsf, gMwxMonAwdlMif;
@@ -1175,6 +1180,10 @@ mwx_init(struct ifnet *ifp)
 		MWX_DEV_LOG(sc, "init sniffer disable returned %d\n", rv);
 		sc->sc_rxfilter |= MT_WF_RFCR_DROP_OTHER_UC;
 		mwx_clear(sc, MT_DMA_DCR0(0), MT_DMA_DCR0_RXD_G5_EN);
+		if (gMwxMonPassive) {	/* passive AWDL sniffing while associated */
+			gMwxRfcrSaved = sc->sc_rxfilter & MWX_RFCR_PASSIVE_MASK;
+			sc->sc_rxfilter &= ~MWX_RFCR_PASSIVE_MASK;
+		}
 	}
 	mwx_write(sc, MT_WF_RFCR(0), sc->sc_rxfilter);
 	MWX_DEV_LOG(sc, "init rxfilter set 0x%08x\n", sc->sc_rxfilter);
@@ -2126,7 +2135,7 @@ mwx_rx(struct mwx_softc *sc, struct mbuf *m, struct mbuf_list *ml)
 	}
 	sc->sc_rx_delivered++;
 
-	if (__predict_false(ic->ic_opmode == IEEE80211_M_MONITOR))
+	if (__predict_false(ic->ic_opmode == IEEE80211_M_MONITOR || gMwxMonPassive))
 		mwx_mon_tap(sc, m, &rxi);
 
 #if NBPFILTER > 0
@@ -8344,6 +8353,8 @@ MtkMwx::setMonitor(bool on, uint8_t channel, bool logAwdl)
 	if (on) {
 		if (channel == 0 || channel > IEEE80211_CHAN_MAX || ic->ic_channels[channel].ic_freq == 0)
 			return kIOReturnBadArgument;
+		if (gMwxMonPassive)
+			setMonitorPassive(false, false);
 		struct ieee80211_channel *chan = &ic->ic_channels[channel];
 
 		gMwxMonLogAwdl = logAwdl ? 1 : 0;
@@ -8368,6 +8379,8 @@ MtkMwx::setMonitor(bool on, uint8_t channel, bool logAwdl)
 		return r;
 	}
 
+	if (gMwxMonPassive)
+		setMonitorPassive(false, false);
 	if (ic->ic_opmode != IEEE80211_M_MONITOR)
 		return kIOReturnSuccess;
 	if (up)
@@ -8378,6 +8391,46 @@ MtkMwx::setMonitor(bool on, uint8_t channel, bool logAwdl)
 		r = enable(NULL);
 	MWX_DEV_LOG(com, "monitor mode off, station mode again, up=%d = 0x%x\n", up, r);
 	return r;
+}
+
+/*
+ * ABI 7, enable = 2: sniff while staying associated. No mode change and no
+ * channel change (only the station's channel is heard): the RX filter drop
+ * bits for other BSSes / other unicast are cleared so the tap sees them, and
+ * set again when it ends. Survives mwx_init (a rejoin) through gMwxMonPassive.
+ * Runs on the command gate.
+ */
+IOReturn
+MtkMwx::setMonitorPassive(bool on, bool logAwdl)
+{
+	if (com == NULL)
+		return kIOReturnNotAttached;
+	struct ieee80211com *ic = &com->sc_ic;
+	struct ifnet *ifp = &ic->ic_if;
+
+	if (ic->ic_opmode == IEEE80211_M_MONITOR)
+		return kIOReturnBusy;		/* full monitor mode is on */
+	gMwxMonLogAwdl = logAwdl ? 1 : 0;
+	if (on == (gMwxMonPassive != 0))
+		return kIOReturnSuccess;
+	if (on) {
+		gMwxMonFrames = gMwxMonMgmt = gMwxMonAction = 0;
+		gMwxMonAwdl = gMwxMonAwdlPsf = gMwxMonAwdlMif = 0;
+	}
+	gMwxMonPassive = on ? 1 : 0;
+	if (ifp->if_flags & IFF_RUNNING) {
+		if (on) {
+			gMwxRfcrSaved = com->sc_rxfilter & MWX_RFCR_PASSIVE_MASK;
+			com->sc_rxfilter &= ~MWX_RFCR_PASSIVE_MASK;
+		} else {
+			com->sc_rxfilter = (com->sc_rxfilter & ~MWX_RFCR_PASSIVE_MASK) | gMwxRfcrSaved |
+			    MT_WF_RFCR_DROP_OTHER_UC;
+		}
+		mwx_write(com, MT_WF_RFCR(0), com->sc_rxfilter);
+	}
+	MWX_DEV_LOG(com, "passive monitor %s, rxfilter 0x%08x, running=%d\n", on ? "on" : "off",
+	    com->sc_rxfilter, (ifp->if_flags & IFF_RUNNING) != 0);
+	return kIOReturnSuccess;
 }
 
 bool
@@ -9173,9 +9226,9 @@ mwx_dbg(uint32_t op, uint32_t a, uint32_t b, char *out, size_t outlen)
 		break;
 	}
 	case 42: {	/* MT7902 AWDL staging state */
-		snprintf(out, outlen, "awdl_en=%u chan_sw=%u hw7902=%d mon=%d mon_frames=%u mgmt=%u action=%u awdl=%u psf=%u mif=%u",
+		snprintf(out, outlen, "awdl_en=%u chan_sw=%u hw7902=%d mon=%d passive=%u mon_frames=%u mgmt=%u action=%u awdl=%u psf=%u mif=%u",
 		    (unsigned)gMwxAwdlEnabled, (unsigned)gMwxAwdlChanSwitches,
-		    (int)MWX_IS_7902(sc), (int)(sc->sc_ic.ic_opmode == IEEE80211_M_MONITOR),
+		    (int)MWX_IS_7902(sc), (int)(sc->sc_ic.ic_opmode == IEEE80211_M_MONITOR), (unsigned)gMwxMonPassive,
 		    (unsigned)gMwxMonFrames, (unsigned)gMwxMonMgmt, (unsigned)gMwxMonAction,
 		    (unsigned)gMwxMonAwdl, (unsigned)gMwxMonAwdlPsf, (unsigned)gMwxMonAwdlMif);
 		break;

@@ -264,7 +264,6 @@ static volatile int gYYMonChannel;                  /* 0 = not in monitor mode *
 static volatile bool gYYMonHookOn;
 static uint32_t gYYMonHopMs;
 static uint32_t gYYMonHopIdx;
-static uint32_t gYYMonTick;
 static IOTimerEventSource *gYYMonTimer;
 static volatile int gYYMonStopping;
 
@@ -371,7 +370,6 @@ static void yy_awdl_mon_timer_action(OSObject *owner, IOTimerEventSource *t)
     MT7902AirWiFiLayer *c = OSDynamicCast(MT7902AirWiFiLayer, owner);
     if (c == nullptr || t == nullptr || gYYMonStopping)
         return;
-    gYYMonTick++;
     if (gYYMonHopMs != 0 && gYYMonChannel != 0) {
         static const uint8_t social[3] = { 6, 44, 149 };
         IOService *r = c->radio();
@@ -445,8 +443,9 @@ static void yy_awdl_mon_stop(MT7902AirWiFiLayer *ctrl)
         OSSafeReleaseNULL(gYYMonTimer);
     }
     IOService *r = ctrl != nullptr ? ctrl->radio() : nullptr;
+    bool detached = false;
     if (r != nullptr && gYYMonHookOn)
-        r->callPlatformFunction(YY_RADIO_FN_MON_HOOK, false, nullptr, nullptr, nullptr, nullptr);
+        detached = r->callPlatformFunction(YY_RADIO_FN_MON_HOOK, false, nullptr, nullptr, nullptr, nullptr) == kIOReturnSuccess;
     if (r != nullptr && gYYMonChannel != 0) {
         struct yy_radio_monitor m = { 0, 0, 0, 0 };     /* back to station mode */
         r->callPlatformFunction(YY_RADIO_FN_MONITOR, false, &m, nullptr, nullptr, nullptr);
@@ -454,6 +453,12 @@ static void yy_awdl_mon_stop(MT7902AirWiFiLayer *ctrl)
     gYYMonHookOn = false;
     gYYMonChannel = 0;
     gYYMonHopMs = 0;
+    /* the gated detach means the hook cannot run any more: free the lock then */
+    if (detached && gYYMonLock != nullptr) {
+        IOSimpleLock *l = gYYMonLock;
+        gYYMonLock = nullptr;
+        IOSimpleLockFree(l);
+    }
 }
 
 

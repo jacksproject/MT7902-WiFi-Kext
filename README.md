@@ -53,6 +53,10 @@ Add your regulatory country code in `config.plist -> NVRAM -> Add -> 7C436110-AB
 | `-mt7902off` | Loads the radio driver only without starting the native macOS Wi-Fi layer. |
 | `-mt7902nobt` | Prevents the kext from writing Bluetooth NVRAM keys at boot. |
 | `-mt7902nodrvavail` | Suppresses posting the boot-time driver-available event. |
+| `mt7902-mon=CH` | Experimental (AWDL research): the radio's first enable starts in monitor mode on channel `CH` (AWDL social channels: 6, 44, 149) and logs AWDL frames. Wi-Fi is unusable while monitoring. |
+| `mt7902_awdl=1` | Experimental: enables the AWDL staging code in the native layer (attaches the radio's monitor hook and publishes AWDL counters/frames to IORegistry). Does not create `awdl0` yet. |
+| `mt7902-awdl-mon=CH` | With `mt7902_awdl=1`: put the radio in monitor mode on channel `CH` through the radio ABI. |
+| `mt7902-awdl-hop=MS` | With `mt7902_awdl=1`: hop the AWDL social channels 6 -> 44 -> 149 every `MS` ms (100 or more). Implies monitor mode. |
 
 > **Automatic Crash Guard:** If macOS encounters an issue while initializing the native Wi-Fi layer, the NVRAM guard (`mt7902-arm-guard`) automatically skips starting the native layer on the next boot so you can recover safely.
 
@@ -191,12 +195,27 @@ Append the following flags to your existing `boot-args`:
 
 ---
 
+## AWDL research (experimental)
+
+Radio ABI 7 adds monitor mode and a raw 802.11 RX tap (`yyRadioMonitor`, `yyRadioMonHook` in `mt7902_radio.h`). The radio counts management, action and AWDL frames (Apple OUI `00:17:F2`, type 8; PSF/MIF subtypes) and logs them; the layer can publish the counters and the last frames to IORegistry:
+
+```
+log show --last boot | grep "AWDL mon"
+ioreg -l -w0 | grep -E "mt7902-awdl-(mon|frames)"
+```
+
+Status: untested monitor-mode RX only. There is no `awdl0` interface and no transmit path yet.
+
+---
+
 ## Roadmap
 
 * [x] Bring up MediaTek MT7902 Wi-Fi on AMD Ryzen 7 Hackintosh
 * [x] Support macOS Tahoe (26) & macOS Sequoia (15) native Wi-Fi stack
 * [x] Full `MT7902WiFi` rebrand (`MT7902WiFi.kext`, `mt7902-*` boot-args, build scripts, and GitHub Actions workflow)
 * [x] Document MT7902 Bluetooth setup (`SimpleMtkBtFw` / `SimpleMtkBtPatcher` + `BlueToolFixup`)
+* [x] AWDL: monitor mode + raw RX tap in the radio ABI (7), IORegistry bridge in the layer (untested)
+* [ ] AWDL: raw TX (`yyRadioMonTx`) and the `awdl0` interface
 
 ---
 

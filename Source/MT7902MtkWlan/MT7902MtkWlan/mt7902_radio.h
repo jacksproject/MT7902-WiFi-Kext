@@ -133,8 +133,8 @@ struct yy_radio_status {
 struct yy_radio_rxmeta {
     uint8_t  channel;           /* IEEE channel number the frame was received on */
     uint8_t  reserved[3];
-    int32_t  rssi_raw;          /* net80211 rxi_rssi as the HAL got it (units not yet verified) */
-    uint64_t tsf;               /* receive timestamp in us, 0 = not available yet */
+    int32_t  rssi_raw;          /* rxi_rssi at the tap point: dBm (negative), before net80211's rssi conversion */
+    uint64_t tsf;               /* rxi_tstamp (low 32 bits, us), 0 if the RXD carries none */
 };
 
 typedef void (*yy_radio_mon_fn)(void *ctx, const uint8_t *frame, uint32_t len,

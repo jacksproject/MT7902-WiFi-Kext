@@ -2135,7 +2135,7 @@ mwx_rx(struct mwx_softc *sc, struct mbuf *m, struct mbuf_list *ml)
 	}
 	sc->sc_rx_delivered++;
 
-	if (__predict_false(ic->ic_opmode == IEEE80211_M_MONITOR || gMwxMonPassive))
+	if (ic->ic_opmode == IEEE80211_M_MONITOR || gMwxMonPassive)
 		mwx_mon_tap(sc, m, &rxi);
 
 #if NBPFILTER > 0
